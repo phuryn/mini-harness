@@ -20,8 +20,9 @@ HELP = """/new                 start a fresh session
 
 
 class UI:
-    def __init__(self, indent="", quiet=False):
-        self.indent, self.quiet, self.mode = indent, quiet, None
+    def __init__(self, indent="", quiet=False, silent=False):
+        """quiet hides streamed text and thinking (subagents); silent hides everything but warnings (--json)."""
+        self.indent, self.quiet, self.silent, self.mode = indent, quiet or silent, silent, None
 
     def _switch(self, mode):
         if self.mode != mode:
@@ -46,29 +47,26 @@ class UI:
         self.mode = None
 
     def tool_call(self, name, args):
-        if self.quiet:
+        if self.silent:
             return
         brief = args.get("command") or args.get("path") or args.get("prompt") or json.dumps(args)[:120]
         print(f"{self.indent}{CYA}→ {name}{OFF} {str(brief).splitlines()[0][:150] if brief else ''}")
 
     def tool_result(self, out, err):
-        if self.quiet:
+        if self.silent:
             return
         first = (out.strip().splitlines() or [""])[0][:150]
         print(f"{self.indent}  {RED if err else DIM}{first}{OFF}")
 
     def note(self, s):
-        if not self.quiet:
+        if not self.silent:
             print(f"{self.indent}{DIM}· {s}{OFF}")
 
     def warn(self, s):
         print(f"{self.indent}{YEL}! {s}{OFF}", file=sys.stderr)
 
     def child(self):
-        child = UI(self.indent + "    ", quiet=True)
-        child.tool_call, child.tool_result = (self.tool_call, self.tool_result) if not self.quiet else (
-            child.tool_call, child.tool_result)
-        return child
+        return UI(self.indent + "    ", quiet=True, silent=self.silent)
 
 
 def status_line(agent):
@@ -104,7 +102,7 @@ def main():
 
     cwd = os.getcwd()
     headless = bool(args.prompt or args.goal)
-    ui = UI(quiet=headless and args.json)
+    ui = UI(silent=headless and args.json)
     approver = Approver(auto=args.yes, interactive=not headless, allow=args.allow)
     hub, skills = MCPHub(cwd), find_skills(cwd)
     for e in hub.errors:
@@ -181,8 +179,7 @@ def command(agent, line, new):
         if agent.goal:
             print_goal(agent.goal)
     elif cmd == "/compact":
-        if agent.compact():
-            print(f"{DIM}compacted{OFF}")
+        agent.compact()
     elif cmd == "/goal":
         if rest in ("", "status"):
             print_goal(agent.goal)

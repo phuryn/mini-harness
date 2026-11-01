@@ -44,23 +44,30 @@ class Session:
     def events(self):
         if not self.path.exists():
             return []
-        return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
+        events = []
+        for line in self.path.read_text().splitlines():
+            try:
+                events.append(json.loads(line))
+            except json.JSONDecodeError:  # a line cut off by a crash; everything before it is intact
+                pass
+        return events
 
     def load(self):
-        """Return (meta, messages, goal, cost) rebuilt from the log."""
-        meta, messages, goal, cost = None, [], None, 0.0
+        """Return (meta, messages, goal, cost, context size) rebuilt from the log."""
+        meta, messages, goal, cost, context = None, [], None, 0.0, 0
         for e in self.events():
             if e["kind"] == "meta":
                 meta = e
             elif e["kind"] == "msg":
                 messages.append(e["message"])
             elif e["kind"] == "compact":
-                messages = [e["message"]]
+                messages, context = [e["message"]], 0
             elif e["kind"] == "goal":
                 goal = e["goal"] if e["goal"]["status"] != "cleared" else None
             elif e["kind"] == "usage":
                 cost += e.get("cost", 0)
-        return meta, messages, goal, cost
+                context = e.get("context", context)
+        return meta, messages, goal, cost, context
 
 
 def sessions(cwd: str) -> list[Path]:

@@ -18,7 +18,7 @@ import anthropic
 
 from .context import build_system
 from .session import Session
-from .tools import SCHEMAS, WEB_SEARCH, LocalTools, ToolError, truncate
+from .tools import SCHEMAS, WEB_SEARCH, LocalTools, ToolError, run_shell, truncate
 
 MAIN_MODEL = os.environ.get("MINI_MODEL", "claude-opus-5-5")
 SUB_MODEL = "claude-sonnet-5-5"
@@ -38,6 +38,8 @@ GOAL_RULES = (
     "The harness will keep asking you to continue until you call goal_done. Call goal_done only when the objective is "
     "fully met and you have checked it, and put the evidence (commands run, results) in the call. {verify}"
     "If you cannot make progress without the user, end your message with a line that starts with BLOCKED: and the question.")
+
+GOAL_OFF = "Goal mode is off (status: {status}). Earlier goal instructions no longer apply unless the user resumes the goal."
 
 EXTRA_SCHEMAS = {
     "task": {
@@ -73,13 +75,16 @@ class Agent:
         self.cwd, self.session, self.ui, self.approver, self.hub = cwd, session, ui, approver, hub
         self.client = client or anthropic.Anthropic()
         self.local = LocalTools(cwd, approver)
-        self.effort, self.last_context = effort, 0
+        self.effort = effort
         self.pending_system: list[str] = []
         self.goal_claim = None
-        meta, self.messages, self.goal, self.cost = session.load()
+        meta, self.messages, self.goal, self.cost, self.last_context = session.load()
         if meta:  # resume: replay the frozen prompt and tools byte for byte
             self.model, self.system, self.tools = meta["model"], meta["system"], meta["tools"]
             self.repair()
+            said = "\n".join(m["content"] for m in self.messages if m["role"] == "system")
+            if said.rfind("Goal mode is on") > said.rfind("Goal mode is off") and not (self.goal and self.goal["status"] == "active"):
+                self.pending_system.append(GOAL_OFF.format(status=self.goal["status"] if self.goal else "cleared"))
         else:
             self.model = model or (SUB_MODEL if sub else MAIN_MODEL)
             names = ["read", "bash"] if sub else ["read", "write", "edit", "bash"]
@@ -149,7 +154,10 @@ class Agent:
         u = resp.usage
         cost = 0.0
         for i in (u.iterations or [u]):  # each iteration (compaction, declined attempt, fallback) has its own price
-            pin, pout, pread, pwrite = PRICES.get(getattr(i, "model", None) or resp.model, PRICES[MAIN_MODEL])
+            model = getattr(i, "model", None) or resp.model
+            pin, pout, pread, pwrite = PRICES.get(model) or PRICES["claude-opus-5-5"]
+            if "haiku-5-5" in model and n(i.input_tokens) + n(i.cache_read_input_tokens) > 100_000:
+                pin, pout, pread, pwrite = 0.50, 2.50, 0.05, 0.625  # long-prompt rate card
             cost += (n(getattr(i, "input_tokens", 0)) * pin + n(getattr(i, "output_tokens", 0)) * pout
                      + n(getattr(i, "cache_read_input_tokens", 0)) * pread
                      + n(getattr(i, "cache_creation_input_tokens", 0)) * pwrite) / 1e6
@@ -159,7 +167,7 @@ class Agent:
         last = next((i for i in reversed(u.iterations or []) if i.type in ("message", "fallback_message")), u)
         self.last_context = sum(n(getattr(last, f, 0)) for f in
                                 ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"))
-        self.session.append("usage", usage=u.to_dict(exclude_none=True), cost=round(cost, 6))
+        self.session.append("usage", usage=u.to_dict(exclude_none=True), cost=round(cost, 6), context=self.last_context)
         drops = [t.to_dict() for t in (resp.input_transformations or [])]
         if drops:
             self.session.append("transform", items=drops)
@@ -184,8 +192,9 @@ class Agent:
                 self.ui.warn(f"request failed: {e}")
                 return "error"
             blocks = clean([b.to_dict(exclude_none=True) for b in resp.content])
-            if all(b["type"] == "fallback" for b in blocks):  # an empty assistant message would 400 every later request
-                self.placeholder(f"no content: {resp.stop_reason}")
+            if resp.stop_reason == "refusal" or all(b["type"] == "fallback" for b in blocks):
+                # a refused partial is discarded; an empty assistant message would 400 every later request
+                self.placeholder(f"no content: {resp.stop_reason}" if not blocks else "declined")
             else:
                 self.add({"role": "assistant", "content": blocks})
             self.track(resp)
@@ -199,6 +208,8 @@ class Agent:
                 if interrupted:
                     return "interrupted"
                 if resp.stop_reason == "tool_use":
+                    if self.last_context > COMPACT_AT and self.compact():  # long tool loops must not outgrow the window
+                        self.add_user("Context was compacted. Continue the current task from the summary.")
                     continue
             if resp.stop_reason == "refusal":
                 self.ui.warn(f"refused: {getattr(resp.stop_details, 'category', None)}")
@@ -283,6 +294,7 @@ class Agent:
         self.messages = [msg]
         self.session.append("compact", message=msg)
         self.last_context = 0
+        self.ui.note("compacted")
         if self.goal and self.goal["status"] == "active":
             self.pending_system.append(self.goal_rules())
         return True
@@ -310,7 +322,7 @@ class Agent:
         if self.goal:
             self.goal["status"] = "cleared"
             self.save_goal()
-            self.pending_system.append("Goal mode is off. The user cleared the goal.")
+            self.pending_system.append(GOAL_OFF.format(status="cleared by the user"))
             self.goal = None
 
     def run_goal(self, first="Resume work toward the goal."):
@@ -352,8 +364,7 @@ class Agent:
             raise
         finally:
             self.save_goal()
-            self.pending_system.append(f"Goal mode is off (status: {g['status']}). Earlier goal instructions no "
-                                       "longer apply unless the user resumes the goal.")
+            self.pending_system.append(GOAL_OFF.format(status=g["status"]))
         return g
 
     def verify(self):
@@ -362,7 +373,7 @@ class Agent:
             return True, ""
         self.ui.note(f"verifying: {cmd}")
         try:
-            r = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=600)
+            code, out, err = run_shell(cmd, self.cwd, 600)
         except subprocess.TimeoutExpired:
             return False, "The verify command timed out after 600s."
-        return r.returncode == 0, (r.stdout + r.stderr)
+        return code == 0, out + err

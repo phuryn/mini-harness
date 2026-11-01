@@ -141,7 +141,7 @@ def test_compaction_swaps_history_for_the_block(ws):
     msgs = client.requests[-1]["messages"]
     assert msgs[0] == {"role": "assistant", "content": [block]}
     assert msgs[1] == {"role": "user", "content": "next"}
-    _, loaded, _, _ = Session(agent.session.path).load()
+    _, loaded, _, _, _ = Session(agent.session.path).load()
     assert loaded == agent.messages
     assert client.requests[-1]["system"] == client.requests[0]["system"]
 
@@ -483,3 +483,75 @@ def test_bash_timeout_kills_the_process_group(ws):
     tools = LocalTools(str(ws), Approver(auto=True))
     with pytest.raises(ToolError, match="Timed out"):
         tools.bash("sleep 30 & sleep 30", timeout=1)
+
+
+# --- review round 3 regressions -----------------------------------------------
+
+def test_goal_off_notice_survives_restart(ws):
+    agent, _, _ = make(ws, [reply(text("BLOCKED: ?"))])
+    agent.set_goal("ship it")
+    again, client, _ = make(ws, [reply(text("hi"))], session=Session(agent.session.path))
+    again.turn("unrelated")
+    last_sys = [m for m in client.requests[-1]["messages"] if m["role"] == "system"][-1]
+    assert "Goal mode is off" in last_sys["content"]
+
+
+def test_compaction_inside_a_long_tool_loop(ws, monkeypatch):
+    monkeypatch.setattr("mini.loop.COMPACT_AT", 500)
+    block = {"type": "compaction", "content": "S", "signature": "c"}
+    agent, client, _ = make(ws, [reply(tool("bash", {"command": "echo a"}), stop="tool_use", u=usage(inp=900)),
+                                 reply(block, stop="compaction"), reply(text("done"))])
+    agent.turn("go")
+    msgs = client.requests[-1]["messages"]
+    assert msgs[0]["content"][0]["type"] == "compaction" and msgs[-1]["role"] == "user"
+    assert "compacted" in msgs[-1]["content"]
+
+
+def test_resume_restores_context_size(ws):
+    agent, _, _ = make(ws, [reply(text("x"), u=usage(inp=200_000))])
+    agent.turn("hi")
+    again, _, _ = make(ws, [], session=Session(agent.session.path))
+    assert again.last_context == agent.last_context > 200_000
+
+
+@pytest.mark.parametrize("path", ["docs/HEAD", "docs/config"])
+def test_git_repo_lookalike_files_need_approval(ws, path):
+    with pytest.raises(ToolError, match="denied"):
+        LocalTools(str(ws), Approver(interactive=False)).write(path, "x")
+
+
+def test_every_write_asks_when_started_in_home(ws, monkeypatch):
+    monkeypatch.setattr(Path, "home", classmethod(lambda cls: ws))
+    with pytest.raises(ToolError, match="denied"):
+        LocalTools(str(ws), Approver(interactive=False)).write("notes.txt", "x")
+
+
+def test_unknown_model_does_not_break_tracking(ws):
+    agent, _, _ = make(ws, [reply(text("x"), model="claude-fable-5-1")])
+    assert agent.turn("hi") == "end_turn" and agent.cost > 0
+
+
+def test_refused_partial_is_discarded(ws):
+    agent, _, _ = make(ws, [reply(text("half an answer"), stop="refusal")])
+    agent.turn("x")
+    assert agent.messages[-1]["content"] == [{"type": "text", "text": "(declined)"}]
+
+
+def test_truncated_session_line_is_skipped(ws):
+    agent, _, _ = make(ws, [reply(text("x"))])
+    agent.turn("hi")
+    with agent.session.path.open("a") as f:
+        f.write('{"kind": "msg", "message": {"ro')
+    again, _, _ = make(ws, [], session=Session(agent.session.path))
+    assert len(again.messages) == 2 and list_sessions(str(ws))
+
+
+def test_malformed_mcp_json_is_reported(ws):
+    (ws / "mcp.json").write_text("{not json")
+    hub = MCPHub(str(ws))
+    assert hub.errors and "not valid JSON" in hub.errors[0]
+
+
+def test_empty_allow_entry_approves_nothing(ws):
+    ap = Approver(interactive=False, allow=("",))
+    assert not ap.ok("bash", "rm -rf x") and not ap.ok("mcp", "mcp__x__y {}")

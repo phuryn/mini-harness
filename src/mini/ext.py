@@ -41,10 +41,14 @@ class MCPHub:
         cfg = next((p for p in [Path(cwd) / "mcp.json", Path.home() / ".mini" / "mcp.json"] if p.exists()), None)
         if not cfg:
             return
-        servers = json.loads(cfg.read_text()).get("mcpServers", {})
+        try:
+            servers = json.loads(cfg.read_text()).get("mcpServers", {})
+        except (json.JSONDecodeError, AttributeError) as e:
+            self.errors.append(f"{cfg}: not valid JSON ({e})")
+            return
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
-        self.stop = self._run(self._make_event())
+        self.stop = asyncio.Event()
         self.tasks = []
         for name, spec in servers.items():
             ready = concurrent.futures.Future()
@@ -56,12 +60,6 @@ class MCPHub:
                 ready.cancel()
                 task.cancel()
                 self.errors.append(f"{name}: {e!r}"[:200])
-
-    def _run(self, coro, timeout=None):
-        return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
-
-    async def _make_event(self):
-        return asyncio.Event()
 
     async def _serve(self, name, spec, ready):
         """Holds one server's connection open in a single task until close()."""
