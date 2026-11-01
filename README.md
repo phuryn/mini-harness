@@ -47,14 +47,14 @@ Ctrl-C stops the current turn and keeps the session valid.
 
 | File | Lines | Job |
 |---|---|---|
-| `loop.py` | 424 | Model calls, tool dispatch, subagents, compaction, `/goal`, the judge, providers, cost |
-| `cli.py` | 200 | REPL, slash commands, headless mode |
-| `tools.py` | 184 | read, write, edit, bash, approval gate |
+| `loop.py` | 434 | Model calls, tool dispatch, subagents, compaction, `/goal`, the judge, providers, cost |
+| `cli.py` | 196 | REPL, slash commands, headless mode |
+| `tools.py` | 185 | read, write, edit, bash, approval gate |
 | `ext.py` | 86 | Skills discovery, MCP stdio hub |
-| `session.py` | 73 | JSONL session files |
+| `session.py` | 70 | JSONL session files |
 | `context.py` | 25 | The frozen system prompt |
 
-That's 994 lines of code (not counting blank lines, comments or docstrings), and about 150 of them are prompts, tool descriptions and schemas.
+That's 998 lines of code (not counting blank lines, comments or docstrings), and about 150 of them are prompts, tool descriptions and schemas.
 
 ## How it works
 
@@ -103,9 +103,9 @@ DeepSeek V4.1 Flash (`--model deepseek-flash`, key in `DEEPSEEK_API_KEY`) runs t
               "compact_at": 150000, "search": 0, "efforts": ["low", "high"], "prices": [0.5, 2, 0.05, 0.5]}}
 ```
 
-Keys stay in environment variables, never on the command line, where shell history and `ps` would keep them. An OpenAI-format endpoint would need a translation layer for messages, tools and thinking, which is more code than the rest of this file.
+Keys stay in environment variables, never on the command line, where shell history and `ps` would keep them. A model whose key is missing refuses to start, so the Anthropic key is never sent to another endpoint. An OpenAI-format endpoint would need a translation layer for messages, tools and thinking, which is more code than the rest of this file.
 
-**The permission judge.** With `--permissions judge` (or `/permissions judge`), a risky call goes to [Jev](https://www.productcompass.pm/p/jev-decision-model), a decision model on OpenRouter, before it would reach you. Jev answers allow or deny with a confidence. Below 0.8 the call asks you, and in headless mode it's denied. If Jev can't be reached, the call is denied. A denial goes back to the model with the reason, so it can change course. Jev sees your own messages and the action, nothing else: not the model's reasoning, and not tool output, because files and web pages can carry instructions aimed at whoever reads them. A check costs about $0.00002. It's still a model judging a model, not a sandbox.
+**The permission judge.** With `--permissions judge` (or `/permissions judge`), a risky call goes to [Jev](https://www.productcompass.pm/p/jev-decision-model), a decision model on OpenRouter, before it would reach you. Jev answers allow or deny with a confidence. Below 0.8 the call asks you, and in headless mode it's denied. If Jev can't be reached, the call is denied. A denial goes back to the model with the reason, so it can change course. Jev sees your own messages (including your answers to `ask_user`), the active goal, and the whole action, nothing else: not the model's reasoning, not tool output, and not messages the harness writes, such as test output from `--verify`, because those can carry instructions aimed at whoever reads them. An action too long to review (over 4,000 characters) is denied before Jev sees it. Writes that need approval (outside the project, or files that run later) always go to you, never to Jev. A check costs about $0.00002. It's still a model judging a model, not a sandbox.
 
 **Asking you.** The `ask_user` tool lets the model ask a question mid-task. In headless runs nobody answers, so the model is told to make its best assumption and say what it assumed.
 

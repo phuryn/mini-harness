@@ -71,15 +71,16 @@ class Approver:
         if kind == "mcp" and any(detail.split()[0].startswith(a[0]) for a in self.allow):
             return True
         self.reason = ""
-        if self.use_judge and self.judge:
+        if len(detail) > 4000:  # too long to review, by you or the judge, which must see the whole action
+            self.reason = " Too long to review: split it into smaller steps."
+            return False
+        if self.use_judge and self.judge and kind != "write":  # gated writes run later; the user decides
             verdict, why = self.judge(kind, detail)
             self.reason = f" Judge: {why}"
             if verdict != "ask":
                 return verdict == "allow"
         if not self.interactive:
             return False
-        if len(detail) > 4000:
-            return False  # too long to review on a terminal
         shown = "".join(c if c.isprintable() else repr(c)[1:-1] for c in detail)  # no hidden \r or escapes
         always = kind != "write"  # protected writes are asked one by one
         hint = f"y/n/a=all {kind} calls until you quit" if always else "y/n"

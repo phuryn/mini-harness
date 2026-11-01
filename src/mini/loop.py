@@ -85,6 +85,12 @@ EXTRA_SCHEMAS = {
 }
 
 
+def need_key(model, client):
+    """Checked before anything is written. Without its own key the SDK would send the Anthropic key elsewhere."""
+    if model in OTHER and not client and not os.environ.get(OTHER[model]["key"]):
+        raise RuntimeError(f"{model} needs {OTHER[model]['key']} in the environment.")
+
+
 def n(x) -> int:
     return x or 0
 
@@ -109,6 +115,7 @@ class Agent:
         meta, self.messages, self.goal, self.cost, self.last_context = session.load()
         if meta:  # resume: replay the frozen prompt and tools byte for byte
             self.model, self.system, self.tools = meta["model"], meta["system"], meta["tools"]
+            need_key(self.model, client)
             self.repair()
             if self.goal and self.goal["status"] == "active":  # nothing runs it in a fresh process
                 self.goal["status"], self.goal["note"] = "paused", "interrupted"
@@ -119,6 +126,7 @@ class Agent:
         else:
             self.model = model or (SUB_MODEL if sub else MAIN_MODEL)
             other = self.model in OTHER
+            need_key(self.model, client)
             names = ["read", "bash"] if sub else ["read", "write", "edit", "bash"]
             self.tools = [{"name": x, **SCHEMAS[x]} for x in names]
             if not sub:
@@ -135,16 +143,16 @@ class Agent:
         self.window, self.efforts, self.search_price = cfg["window"], cfg["efforts"], cfg["search"]
         if self.effort not in self.efforts:  # e.g. a subagent's "medium" on DeepSeek
             self.effort = "low" if sub else "high"
-        self.client = client or (anthropic.Anthropic(base_url=self.other["base_url"], api_key=os.environ.get(
-            self.other["key"])) if self.other else anthropic.Anthropic())
+        self.client = client or (anthropic.Anthropic(base_url=self.other["base_url"], api_key=os.environ[
+            self.other["key"]]) if self.other else anthropic.Anthropic())
 
     # --- transcript -------------------------------------------------------
-    def add(self, message: dict):
-        self.session.append("msg", message=message)  # file first: memory may run ahead of disk, never behind
+    def add(self, message: dict, harness=False):
+        self.session.append("msg", message=message, **({"by": "harness"} if harness else {}))  # file first: memory may run ahead of disk, never behind
         self.messages.append(message)
 
-    def add_user(self, content):
-        self.add({"role": "user", "content": content})
+    def add_user(self, content, harness=False):
+        self.add({"role": "user", "content": content}, harness)
         if self.pending_system:  # one system message, right after a user message
             latest = list(dict.fromkeys(reversed(self.pending_system)))[::-1]  # a repeat keeps its latest position
             self.add({"role": "system", "content": "\n\n".join(latest)})
@@ -229,10 +237,13 @@ class Agent:
     def judge(self, kind, detail):
         """Jev, a decision model, rules on risky actions. It sees the user's words and the action, nothing else:
         not the agent's reasoning or tool output, which files and web pages can steer."""
-        asked = [e["message"]["content"][:2000] for e in self.session.events() if e["kind"] == "msg"
+        asked = [e["message"]["content"][:2000] if e["kind"] == "msg" else f"(asked: {e['q'][:500]}) {e['a'][:1000]}"
+                 for e in self.session.events() if e["kind"] == "answer" or e["kind"] == "msg" and not e.get("by")
                  and e["message"]["role"] == "user" and isinstance(e["message"]["content"], str)][-6:]
+        if self.goal and self.goal["status"] == "active":
+            asked.append(f"(goal) {self.goal['objective'][:2000]}")
         state = (f"Working directory: {self.cwd}\n\nThe user's recent messages, oldest first:\n"
-                 + "\n---\n".join(asked or ["(none)"]) + f"\n\nAction ({kind}):\n{detail[:6000]}")
+                 + "\n---\n".join(asked or ["(none)"]) + f"\n\nAction ({kind}):\n{detail}")
         req = urllib.request.Request(JUDGE_URL, json.dumps({"model": JUDGE_MODEL, "state": state, "questions": {
             "verdict": JUDGE}}).encode(), {"Content-Type": "application/json",
                                           "Authorization": f"Bearer {os.environ.get('OPENROUTER_API_KEY', '')}"})
@@ -249,11 +260,11 @@ class Agent:
         return v["choice"], f"{v['choice']} with confidence {v['confidence']:.2f}"
 
     # --- one user turn ----------------------------------------------------
-    def turn(self, content) -> str:
+    def turn(self, content, harness=False) -> str:
         """Run until the model stops asking for tools. Returns the stop reason."""
         self.goal_claim = None
         self.repair()  # closes anything an earlier Ctrl-C left open; only appends
-        self.add_user(content)
+        self.add_user(content, harness)
         paused = []  # replies that paused on a server tool; committed only with the reply that completes them
         while True:
             try:
@@ -292,7 +303,7 @@ class Agent:
                     return "interrupted"
                 if resp.stop_reason == "tool_use":
                     if self.should_compact() and self.compact():  # long tool loops must not outgrow the window
-                        self.add_user("Context was compacted. Continue the current task from the summary.")
+                        self.add_user("Context was compacted. Continue the current task from the summary.", True)
                     continue
             if resp.stop_reason == "refusal":
                 self.ui.warn(f"refused: {getattr(resp.stop_details, 'category', None)}")
@@ -332,7 +343,9 @@ class Agent:
             if not self.approver.interactive:
                 return "Nobody can answer: this is a headless run. Assume what's most reasonable, say so, go on."
             self.ui.end_message()
-            return input(f"\033[33m  ? {args['question']}\n  > \033[0m").strip() or "(no answer)"
+            answer = input(f"\033[33m  ? {args['question']}\n  > \033[0m").strip() or "(no answer)"
+            self.session.append("answer", q=args["question"], a=answer)  # the judge counts it as the user's words
+            return answer
         if name == "goal_done":
             if not self.goal or self.goal["status"] != "active":
                 return "No goal is active."
@@ -451,7 +464,7 @@ class Agent:
         try:
             while True:
                 self.maybe_compact()
-                stop = self.turn(message)
+                stop = self.turn(message, harness=True)  # the objective reaches the judge from the goal itself
                 g["turns"] += 1
                 g["spent"] = self.cost - start_cost
                 if stop in ("interrupted", "error", "refusal"):

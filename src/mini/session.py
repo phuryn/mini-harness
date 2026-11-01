@@ -4,6 +4,7 @@ The file is the transcript, the resume source and the audit log. Nothing in it
 is ever rewritten. A compaction starts a new segment: on load, everything
 before the latest `compact` event is skipped.
 """
+import contextlib
 import hashlib
 import json
 import os
@@ -44,14 +45,10 @@ class Session:
             f.write((json.dumps({"t": time.time(), "kind": kind, **data}) + "\n").encode())
 
     def events(self):
-        if not self.path.exists():
-            return []
         events = []
-        for line in self.path.read_text().splitlines():
-            try:
+        for line in self.path.read_text().splitlines() if self.path.exists() else []:
+            with contextlib.suppress(json.JSONDecodeError):  # a line cut off by a crash; all before it is intact
                 events.append(json.loads(line))
-            except json.JSONDecodeError:  # a line cut off by a crash; everything before it is intact
-                pass
         return events
 
     def load(self):
