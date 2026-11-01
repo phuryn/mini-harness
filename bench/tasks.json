@@ -1,0 +1,17 @@
+[
+  {"id": "bugfix", "check": "python3 -m pytest -q",
+   "prompt": "The tests in this folder fail. Find and fix the bugs in dates.py (not the tests), then run python3 -m pytest -q to confirm.",
+   "allow": ["python3 -m pytest"]},
+  {"id": "feature", "check": "bash check.sh",
+   "prompt": "Add a --top N option to wordcount.py: when given, print the N most frequent words (case-insensitive) as 'word count' lines, most frequent first, instead of the totals. Add a test for it to test_wordcount.py and run python3 -m pytest -q.",
+   "allow": ["python3 -m pytest", "python3 wordcount.py"]},
+  {"id": "research", "check": "bash check.sh",
+   "prompt": "Using only the files in docs/, write answers.md answering: (1) What does the Team plan cost per seat today? (2) What is the annual discount today? (3) Which plan includes SSO and what does it cost? (4) Until when could early free users keep 5 projects? Cite the source file for each answer.",
+   "allow": []},
+  {"id": "goal", "check": "python3 -m pytest -q", "goal": true,
+   "prompt": "Implement slugify in slug.py so that every test in test_slug.py passes. Use only the standard library. Do not change the tests.",
+   "allow": ["python3 -m pytest"]},
+  {"id": "compaction", "check": "bash check.sh", "env": {"MINI_COMPACT_AT": "20000"},
+   "prompt": "Read every module_*.py file here in full, one at a time with the read tool (no grep). Then write timeouts.md listing each TIMEOUT_SECONDS_* constant with its value, one per line, and the total of all values on the last line.",
+   "allow": []}
+]

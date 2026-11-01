@@ -1,4 +1,6 @@
-.venv/
 __pycache__/
-*.pyc
+.env
 .mini/
+.venv/
+*.pyc
+bench/.runs/
