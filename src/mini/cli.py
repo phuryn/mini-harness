@@ -70,7 +70,9 @@ class UI:
 
 
 def status_line(agent):
-    return f"{DIM}[{agent.session.id} · {agent.last_context:,} tokens in context · ${agent.cost:.3f} total]{OFF}"
+    # right after compaction the size is unknown until the next reply reports it
+    ctx = f"{agent.last_context:,} tokens in context" if agent.last_context else "context just compacted"
+    return f"{DIM}[{agent.session.id} · {ctx} · ${agent.cost:.3f} total]{OFF}"
 
 
 def print_goal(g):

@@ -764,3 +764,12 @@ def test_crlf_edge_cases(ws):
 
 def test_negative_timeout_is_clamped(ws):
     assert LocalTools(str(ws), Approver(auto=True)).bash("echo ok", timeout=-1) == "ok"
+
+
+def test_status_line_after_compaction_does_not_claim_zero_tokens(ws):
+    from mini.cli import status_line
+    agent, _, _ = make(ws, [])
+    agent.last_context = 0
+    assert "0 tokens" not in status_line(agent)
+    agent.last_context = 1234
+    assert "1,234 tokens in context" in status_line(agent)
