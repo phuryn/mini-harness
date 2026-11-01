@@ -23,8 +23,8 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 | `/new` | Start a fresh session |
 | `/sessions` | List recent sessions in this directory |
 | `/resume [id]` | Resume the latest session, or one by id prefix |
-| `/compact [focus]` | Replace the history with a summary now; optionally say what it must keep |
-| `/goal <objective>` | Keep working until the objective is done; also `pause`, `resume`, `clear`, `status` |
+| `/compact` | Replace the history with a summary now |
+| `/goal <objective>` | Keep working until the objective is done; also `resume`, `clear`, `status` |
 | `/exit` | Quit. Every message is already saved |
 
 Ctrl-C stops the current turn and keeps the session valid.
@@ -44,12 +44,14 @@ Ctrl-C stops the current turn and keeps the session valid.
 
 | File | Lines | Job |
 |---|---|---|
-| `loop.py` | ~330 | Model calls, tool dispatch, subagents, compaction, `/goal`, cost |
-| `cli.py` | ~210 | REPL, slash commands, headless mode |
-| `tools.py` | ~150 | read, write, edit, bash, approval gate |
-| `ext.py` | ~95 | Skills discovery, MCP stdio hub |
-| `session.py` | ~85 | JSONL session files |
-| `context.py` | ~40 | The frozen system prompt |
+| `loop.py` | 296 | Model calls, tool dispatch, subagents, compaction, `/goal`, cost |
+| `cli.py` | 168 | REPL, slash commands, headless mode |
+| `tools.py` | 118 | read, write, edit, bash, approval gate |
+| `ext.py` | 84 | Skills discovery, MCP stdio hub |
+| `session.py` | 62 | JSONL session files |
+| `context.py` | 28 | The frozen system prompt |
+
+That's 758 lines of code (not counting blank lines, comments or docstrings), and about 80 of them are prompts and tool schemas.
 
 ## How it works
 
@@ -63,13 +65,15 @@ Ctrl-C stops the current turn and keeps the session valid.
 
 **Sessions.** Each conversation is one JSONL file under `~/.mini/sessions/<project>/`. Each line is an event: `meta` (model, frozen prompt, tools), `msg`, `usage`, `compact` or `goal`. Resuming means reading the file. Nothing in it is ever rewritten.
 
-**Compaction.** When the context passes 150K tokens, or when you run `/compact`, mini asks the API for a summary using [on-demand compaction](https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand). The returned block replaces the whole history, and a `compact` event starts a new segment in the session file, so older turns stay on disk. Two common shapes break thinking blocks and are avoided here: summarizing old turns while keeping recent ones verbatim, and compacting in the background.
+**Compaction.** When the context passes 150K tokens, or when you run `/compact`, mini asks the API for a summary using [on-demand compaction](https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand). The returned block replaces the whole history, and a `compact` event starts a new segment in the session file, so older turns stay on disk. Two common shapes break thinking blocks and are avoided here: summarizing old turns while keeping recent ones verbatim, and compacting in the background. Server-side summarization also beats a client-side summary prompt here, because the server's summarizer can read the earlier thinking, and no summarization code ships with the harness.
 
-**Every tool call gets an answer.** Failures, denials, interrupts and calls cut off by `max_tokens` all return a `tool_result` with `is_error: true`. Parallel calls are answered in one message. If any `tool_use` is left without a result, the session can't be resumed.
+**Every tool call gets an answer.** Failures, denials, interrupts and calls cut off by `max_tokens` all return a `tool_result` with `is_error: true`. Parallel calls are answered in one message. If an API call fails or you press Ctrl-C mid-stream, a short placeholder reply is appended so the transcript stays valid. A session that died mid-tool (closed terminal, crash) is repaired on resume, again only by appending.
+
+**Fallbacks.** Requests to Opus and Sonnet set `fallbacks: "default"`. If the model declines a request partway through, the API continues on another model in the same response. mini then runs only the tool calls that come after the `fallback` marker, and drops the declined model's unpaired calls and thinking, as Anthropic's guide says. Cost is computed for each model separately.
 
 **Tools.** `read`, `write`, `edit` and `bash`, plus server-side `web_search`. `edit` refuses to change a file that was modified since the model last read it, and `write` won't overwrite a file the model hasn't read. Search, git and tests go through `bash`.
 
-**Approvals.** Read-only commands such as `ls`, `grep` and `git diff` run without asking, as long as they contain no shell operators. Any other bash command, and any write outside the working directory, asks first. Headless mode denies anything not covered by `--allow`. This gate is not a sandbox.
+**Approvals.** A short list of commands that can't run programs or write files (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `diff` and a few more) runs without asking, as long as it contains no shell operators or newlines. `find`, `rg` and `git` aren't on the list, because flags such as `-exec`, `--pre` and `--output` can run programs or write files. Any other bash command asks first. So does any write outside the working directory, and any write to a file that something else will run later: dot-folders such as `.git/` (git config can make `git status` run commands), `mcp.json`, `conftest.py`, `Makefile`, `package.json` and `pyproject.toml`. The check ignores case, because macOS file systems do. Every MCP tool call asks first. Headless mode denies anything not matched by `--allow`, which compares whole words, so `--allow "python3 -m pytest"` doesn't approve `python3 -c ...`. Writes elsewhere in the project are free, so allowing a test runner means the model can run code it wrote. `read` isn't restricted to the project either. This gate is not a sandbox.
 
 **Memory and instructions.** At session start mini loads `AGENTS.md` (and only that file) plus `memory/INDEX.md`, which routes to area files such as `memory/decisions.md`. The model reads area files when a task touches them and updates them with `edit`. Changes take effect in the next session, because the prompt is frozen within a session.
 

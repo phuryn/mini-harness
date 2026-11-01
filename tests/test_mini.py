@@ -211,7 +211,7 @@ def test_subagent_gets_fresh_context_and_returns_only_text(ws):
     parent_last = client.requests[3]
     assert parent_last["messages"][-1]["content"][0]["content"] == "3 files"
     assert_append_only([client.requests[0], client.requests[3]])
-    assert (agent.session.path.parent / f"{agent.session.id}-sub1.jsonl").exists()
+    assert len(list(agent.session.path.parent.glob(f"{agent.session.id}-sub-*.jsonl"))) == 1
 
 
 def test_dropped_thinking_blocks_are_reported(ws):
@@ -412,3 +412,74 @@ def test_each_iteration_priced_at_its_own_model(ws):
     agent.turn("hi")
     assert agent.cost == pytest.approx(4 + 5)
     assert agent.last_context == 1_000_000
+
+
+# --- review round 2 regressions -----------------------------------------------
+
+def test_empty_reply_becomes_a_placeholder(ws):
+    agent, client, _ = make(ws, [reply(stop="refusal"), reply(text("ok"))])
+    agent.turn("x")
+    assert agent.messages[-1]["content"] == [{"type": "text", "text": "(no content: refusal)"}]
+    agent.turn("y")
+    assert all(m["content"] for m in client.requests[-1]["messages"])
+
+
+@pytest.mark.parametrize("path", [".GIT/hooks/pre-commit", ".git/config", "mcp.json", "conftest.py",
+                                  "sub/.husky/pre-push", "Makefile"])
+def test_files_that_run_later_need_approval(ws, path):
+    tools = LocalTools(str(ws), Approver(interactive=False))
+    with pytest.raises(ToolError, match="denied"):
+        tools.write(path, "x")
+
+
+def test_mcp_calls_need_approval(ws):
+    class Hub:
+        tools, schemas, errors = {"mcp__mail__send": None}, [], []
+        def call(self, name, args): return "sent", False
+    agent = Agent(str(ws), Session.create(str(ws)), QuietUI(), Approver(interactive=False), hub=Hub(),
+                  client=FakeClient([]))
+    with pytest.raises(ToolError, match="denied"):
+        agent.dispatch("mcp__mail__send", {"to": "x"})
+    agent.approver = Approver(interactive=False, allow=("mcp__mail__",))
+    assert agent.dispatch("mcp__mail__send", {"to": "x"}) == "sent"
+
+
+def test_pending_system_messages_join_into_one(ws):
+    agent, client, _ = make(ws, [reply(text("BLOCKED: ?")), reply(text("BLOCKED: again"))])
+    agent.set_goal("first")
+    agent.clear_goal()
+    agent.set_goal("second")
+    roles = [m["role"] for m in client.requests[-1]["messages"]]
+    assert "system" not in [b for a, b in zip(roles, roles[1:]) if a == "system"]
+
+
+def test_goal_mode_is_switched_off_when_it_stops(ws):
+    agent, client, _ = make(ws, [reply(text("BLOCKED: ?")), reply(text("hi"))])
+    agent.set_goal("x")
+    agent.turn("unrelated")
+    last_sys = [m for m in client.requests[-1]["messages"] if m["role"] == "system"][-1]
+    assert "Goal mode is off" in last_sys["content"]
+
+
+def test_resumed_parent_starts_a_fresh_subagent(ws):
+    t1, t2 = tool("task", {"prompt": "a"}), tool("task", {"prompt": "b", "model": "claude-haiku-5-5"})
+    agent, _, _ = make(ws, [reply(t1, stop="tool_use"), reply(text("A"), model="claude-sonnet-5-5"), reply(text("ok"))])
+    agent.turn("one")
+    again, client, _ = make(ws, [reply(t2, stop="tool_use"), reply(text("B"), model="claude-haiku-5-5"),
+                                 reply(text("ok"))], session=Session(agent.session.path))
+    again.turn("two")
+    child = client.requests[1]
+    assert child["model"] == "claude-haiku-5-5" and child["messages"] == [{"role": "user", "content": "b"}]
+
+
+def test_failed_subagent_is_an_error_result(ws):
+    agent, client, _ = make(ws, [reply(tool("task", {"prompt": "a"}), stop="tool_use"), RuntimeError("down"),
+                                 reply(text("ok"))])
+    agent.turn("go")
+    assert client.requests[-1]["messages"][-1]["content"][0]["is_error"] is True
+
+
+def test_bash_timeout_kills_the_process_group(ws):
+    tools = LocalTools(str(ws), Approver(auto=True))
+    with pytest.raises(ToolError, match="Timed out"):
+        tools.bash("sleep 30 & sleep 30", timeout=1)

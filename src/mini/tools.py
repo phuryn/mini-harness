@@ -5,6 +5,7 @@ A tool is a JSON schema the model sees and a Python function the harness runs.
 """
 import os
 import shlex
+import signal
 import subprocess
 from pathlib import Path
 
@@ -31,7 +32,7 @@ class Approver:
 
     def __init__(self, auto: bool = False, interactive: bool = True, allow: tuple = ()):
         self.auto, self.interactive, self.always = auto, interactive, set()
-        self.allow = [shlex.split(a) for a in allow]
+        self.allow_raw, self.allow = tuple(allow), [shlex.split(a) for a in allow]
 
     def pre_approved(self, command: str) -> bool:
         if self.SHELL & set(command):
@@ -44,6 +45,8 @@ class Approver:
 
     def ok(self, kind: str, detail: str) -> bool:
         if self.auto or kind in self.always or (kind == "bash" and self.pre_approved(detail)):
+            return True
+        if kind == "mcp" and self.allow_raw and detail.split()[0].startswith(self.allow_raw):
             return True
         if not self.interactive:
             return False
@@ -63,9 +66,15 @@ class LocalTools:
         path = Path(p).expanduser()
         return (path if path.is_absolute() else self.cwd / path).resolve()
 
+    PROTECTED = {"mcp.json", "conftest.py", "makefile", "package.json", "pyproject.toml", "setup.py"}
+
     def _inside(self, path: Path) -> bool:
-        """Inside the working directory, and not in .git (git config can run commands)."""
-        return self.cwd in path.parents and ".git" not in path.relative_to(self.cwd).parts
+        """Free to write: inside the working directory, and not a file something else will execute later
+        (dot-folders such as .git hooks and config, MCP config, test or build config). macOS paths ignore case."""
+        if self.cwd not in path.parents:
+            return False
+        parts = [x.casefold() for x in path.relative_to(self.cwd).parts]
+        return not any(x.startswith(".") for x in parts) and parts[-1] not in self.PROTECTED
 
     def read(self, path: str, offset: int = 1, limit: int = 2000) -> str:
         p = self._path(path)
@@ -113,13 +122,18 @@ class LocalTools:
     def bash(self, command: str, timeout: int = 120) -> str:
         if not self.approver.ok("bash", command):
             raise ToolError("User denied this command.")
+        proc = subprocess.Popen(command, shell=True, cwd=self.cwd, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                text=True, env={**os.environ, "PAGER": "cat"}, start_new_session=True)
         try:
-            r = subprocess.run(command, shell=True, cwd=self.cwd, capture_output=True, text=True,
-                               timeout=timeout, env={**os.environ, "PAGER": "cat"})
-        except subprocess.TimeoutExpired:
-            raise ToolError(f"Timed out after {timeout}s.")
-        out = (r.stdout + (("\n[stderr]\n" + r.stderr) if r.stderr else "")).strip()
-        return f"{out}\n[exit {r.returncode}]" if r.returncode else (out or "[no output]")
+            stdout, stderr = proc.communicate(timeout=timeout)
+        except BaseException as e:  # timeout or Ctrl-C: kill the whole process group, not just the shell
+            os.killpg(proc.pid, signal.SIGKILL)
+            proc.wait()
+            if isinstance(e, subprocess.TimeoutExpired):
+                raise ToolError(f"Timed out after {timeout}s.")
+            raise
+        out = (stdout + (("\n[stderr]\n" + stderr) if stderr else "")).strip()
+        return f"{out}\n[exit {proc.returncode}]" if proc.returncode else (out or "[no output]")
 
 
 SCHEMAS = {

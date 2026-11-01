@@ -41,12 +41,12 @@ class MCPHub:
         cfg = next((p for p in [Path(cwd) / "mcp.json", Path.home() / ".mini" / "mcp.json"] if p.exists()), None)
         if not cfg:
             return
-        self.servers = json.loads(cfg.read_text()).get("mcpServers", {})
+        servers = json.loads(cfg.read_text()).get("mcpServers", {})
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self.stop = self._run(self._make_event())
         self.tasks = []
-        for name, spec in self.servers.items():
+        for name, spec in servers.items():
             ready = concurrent.futures.Future()
             task = asyncio.run_coroutine_threadsafe(self._serve(name, spec, ready), self.loop)
             self.tasks.append(task)
@@ -76,6 +76,9 @@ class MCPHub:
                     return
                 for t in listed:
                     api = f"mcp__{safe_name(name)}__{safe_name(t.name)}"[:128]
+                    if api in self.tools:  # duplicate names would make every request fail
+                        self.errors.append(f"{name}: skipped {t.name} (name clash with {api})")
+                        continue
                     self.tools[api] = (session, t.name)
                     self.schemas.append({"name": api, "description": (t.description or "")[:1024],
                                          "input_schema": t.input_schema or {"type": "object"}})

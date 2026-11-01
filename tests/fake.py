@@ -93,7 +93,7 @@ class QuietUI:
 
     def text(self, s): pass
     def thinking(self, s): pass
-    def end_message(self, stop, agent): pass
+    def end_message(self): pass
     def tool_call(self, name, args): pass
     def tool_result(self, out, err): pass
     def note(self, s): self.notes.append(s)

@@ -40,27 +40,35 @@ class UI:
             sys.stdout.write(DIM + s + OFF)
             sys.stdout.flush()
 
-    def end_message(self, stop, agent):
+    def end_message(self):
         if self.mode:
             sys.stdout.write("\n")
         self.mode = None
 
     def tool_call(self, name, args):
+        if self.quiet:
+            return
         brief = args.get("command") or args.get("path") or args.get("prompt") or json.dumps(args)[:120]
         print(f"{self.indent}{CYA}→ {name}{OFF} {str(brief).splitlines()[0][:150] if brief else ''}")
 
     def tool_result(self, out, err):
+        if self.quiet:
+            return
         first = (out.strip().splitlines() or [""])[0][:150]
         print(f"{self.indent}  {RED if err else DIM}{first}{OFF}")
 
     def note(self, s):
-        print(f"{self.indent}{DIM}· {s}{OFF}")
+        if not self.quiet:
+            print(f"{self.indent}{DIM}· {s}{OFF}")
 
     def warn(self, s):
-        print(f"{self.indent}{YEL}! {s}{OFF}")
+        print(f"{self.indent}{YEL}! {s}{OFF}", file=sys.stderr)
 
     def child(self):
-        return UI(self.indent + "    ", quiet=True)
+        child = UI(self.indent + "    ", quiet=True)
+        child.tool_call, child.tool_result = (self.tool_call, self.tool_result) if not self.quiet else (
+            child.tool_call, child.tool_result)
+        return child
 
 
 def status_line(agent):
@@ -71,7 +79,7 @@ def print_goal(g):
     if not g:
         print("No goal.")
     else:
-        print(f"Goal [{g['status']}] {g['objective']}\n  turns {g['turns']}/{g['max_turns']} · ${g['spent']:.3f}"
+        print(f"Goal [{g['status']}] {g['objective']}\n  {g['turns']} turns ({g['max_turns']} per run) · ${g['spent']:.3f}"
               + (f" · {g['note']}" if g.get("note") else ""))
 
 
@@ -84,7 +92,9 @@ def main():
     p.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
     p.add_argument("--yes", action="store_true", help="approve every tool call")
     p.add_argument("--allow", action="append", default=[], metavar="PREFIX",
-                   help="approve bash commands starting with PREFIX (repeatable); others are denied when headless")
+                   help="approve bash commands that start with these words, or MCP tools whose name starts with "
+                        "PREFIX (repeatable). Writes inside the project are free, so allowing a test runner lets the "
+                        "model run code it wrote. Everything else is denied when headless")
     p.add_argument("--goal", help="headless: work until this objective is done")
     p.add_argument("--verify", help="with --goal: command that must pass before the goal counts as done")
     p.add_argument("--max-turns", type=int, default=25)

@@ -9,7 +9,9 @@ Three rules keep this loop valid on current Claude models:
 3. Every tool_use gets a tool_result in the next user message, even when the
    call was denied, failed or interrupted.
 """
+import json
 import os
+import secrets
 import subprocess
 
 import anthropic
@@ -68,10 +70,10 @@ def clean(blocks: list[dict]) -> list[dict]:
 class Agent:
     def __init__(self, cwd, session: Session, ui, approver, hub=None, skills=(), model=None, effort="high", sub=False,
                  client=None):
-        self.cwd, self.session, self.ui, self.approver, self.hub, self.sub = cwd, session, ui, approver, hub, sub
+        self.cwd, self.session, self.ui, self.approver, self.hub = cwd, session, ui, approver, hub
         self.client = client or anthropic.Anthropic()
         self.local = LocalTools(cwd, approver)
-        self.effort, self.last_context, self.subs = effort, 0, 0
+        self.effort, self.last_context = effort, 0
         self.pending_system: list[str] = []
         self.goal_claim = None
         meta, self.messages, self.goal, self.cost = session.load()
@@ -96,8 +98,8 @@ class Agent:
 
     def add_user(self, content):
         self.add({"role": "user", "content": content})
-        for text in self.pending_system:  # a system message must follow a user message
-            self.add({"role": "system", "content": text})
+        if self.pending_system:  # one system message, right after a user message
+            self.add({"role": "system", "content": "\n\n".join(dict.fromkeys(self.pending_system))})
         self.pending_system = []
 
     def placeholder(self, why: str):
@@ -168,6 +170,7 @@ class Agent:
     def turn(self, content) -> str:
         """Run until the model stops asking for tools. Returns the stop reason."""
         self.goal_claim = None
+        self.repair()  # closes anything an earlier Ctrl-C left open; only appends
         self.add_user(content)
         while True:
             try:
@@ -181,9 +184,12 @@ class Agent:
                 self.ui.warn(f"request failed: {e}")
                 return "error"
             blocks = clean([b.to_dict(exclude_none=True) for b in resp.content])
-            self.add({"role": "assistant", "content": blocks})
+            if all(b["type"] == "fallback" for b in blocks):  # an empty assistant message would 400 every later request
+                self.placeholder(f"no content: {resp.stop_reason}")
+            else:
+                self.add({"role": "assistant", "content": blocks})
             self.track(resp)
-            self.ui.end_message(resp.stop_reason, self)
+            self.ui.end_message()
             if resp.stop_reason == "pause_turn":  # a server tool paused; send it back to continue
                 continue
             uses = [b for b in blocks if b["type"] == "tool_use"]
@@ -234,6 +240,8 @@ class Agent:
             self.goal_claim = args.get("evidence", "")
             return "Recorded. The harness will check it after this turn."
         if name.startswith("mcp__") and self.hub and name in self.hub.tools:
+            if not self.approver.ok("mcp", f"{name} {json.dumps(args)[:200]}"):
+                raise ToolError("User denied this tool call.")
             out, is_err = self.hub.call(name, args)
             if is_err:
                 raise ToolError(out)
@@ -242,8 +250,7 @@ class Agent:
 
     # --- subagents --------------------------------------------------------
     def run_subagent(self, prompt, model=None):
-        self.subs += 1
-        path = self.session.path.with_name(f"{self.session.id}-sub{self.subs}.jsonl")
+        path = self.session.path.with_name(f"{self.session.id}-sub-{secrets.token_hex(3)}.jsonl")
         child = Agent(self.cwd, Session(path), self.ui.child(), self.approver, model=model, effort="medium", sub=True,
                       client=self.client)
         stop = child.turn(prompt)
@@ -251,6 +258,8 @@ class Agent:
         self.session.append("usage", cost=round(child.cost, 6), subagent=path.name)
         if stop == "interrupted":
             raise KeyboardInterrupt
+        if stop in ("error", "refusal"):
+            raise ToolError(f"The subagent stopped ({stop}): {child.final_text()}")
         return child.final_text() or f"[subagent stopped ({stop}) without an answer]"
 
     # --- compaction -------------------------------------------------------
@@ -309,34 +318,42 @@ class Agent:
         g["status"], g["note"] = "active", ""
         self.save_goal()
         self.pending_system.append(self.goal_rules())  # restated on every start, so a resume after compaction has it
-        start_cost, limit = self.cost - g["spent"], g["turns"] + g["max_turns"]
+        start_cost, run_start = self.cost - g["spent"], g["spent"]
+        limit = g["turns"] + g["max_turns"]  # limits apply per run, so a resume gets a fresh allowance
         message = first
-        while True:
-            self.maybe_compact()
-            stop = self.turn(message)
-            g["turns"] += 1
-            g["spent"] = self.cost - start_cost
-            if stop in ("interrupted", "error", "refusal"):
-                g["status"], g["note"] = "paused", stop
-                break
-            if self.goal_claim is not None:
-                ok, out = self.verify()
-                if ok:
-                    g["status"], g["note"] = "done", self.goal_claim[:500]
+        try:
+            while True:
+                self.maybe_compact()
+                stop = self.turn(message)
+                g["turns"] += 1
+                g["spent"] = self.cost - start_cost
+                if stop in ("interrupted", "error", "refusal"):
+                    g["status"], g["note"] = "paused", stop
                     break
-                message = f"The harness ran `{g['verify']}` and it failed:\n{out[-4000:]}\nKeep working."
-            elif "BLOCKED:" in self.final_text():
-                g["status"], g["note"] = "paused", "blocked: waiting for the user"
-                break
-            else:
-                message = "Continue toward the goal. Call goal_done with evidence when it is fully met."
-            if g["turns"] >= limit:
-                g["status"], g["note"] = "paused", f"turn limit ({g['max_turns']})"
-                break
-            if g.get("budget") and g["spent"] >= g["budget"]:
-                g["status"], g["note"] = "paused", f"budget (${g['budget']})"
-                break
-        self.save_goal()
+                if self.goal_claim is not None:
+                    ok, out = self.verify()
+                    if ok:
+                        g["status"], g["note"] = "done", self.goal_claim[:500]
+                        break
+                    message = f"The harness ran `{g['verify']}` and it failed:\n{out[-4000:]}\nKeep working."
+                elif "BLOCKED:" in self.final_text():
+                    g["status"], g["note"] = "paused", "blocked: waiting for the user"
+                    break
+                else:
+                    message = "Continue toward the goal. Call goal_done with evidence when it is fully met."
+                if g["turns"] >= limit:
+                    g["status"], g["note"] = "paused", f"turn limit ({g['max_turns']} per run)"
+                    break
+                if g.get("budget") and g["spent"] - run_start >= g["budget"]:
+                    g["status"], g["note"] = "paused", f"budget (${g['budget']} per run)"
+                    break
+        except BaseException:
+            g["status"], g["note"] = "paused", "interrupted"
+            raise
+        finally:
+            self.save_goal()
+            self.pending_system.append(f"Goal mode is off (status: {g['status']}). Earlier goal instructions no "
+                                       "longer apply unless the user resumes the goal.")
         return g
 
     def verify(self):
