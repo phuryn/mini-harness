@@ -239,13 +239,15 @@ class Agent:
     def judge(self, kind, detail):
         """Jev, a decision model, rules on risky actions. It sees the user's words and the action, nothing else:
         not the agent's reasoning or tool output, which files and web pages can steer."""
-        events = self.session.events()  # untagged harness text comes from sessions older than the tag
-        asked = [e["message"]["content"][:2000] for e in events if e["kind"] == "msg" and not e.get("by") and
-                 e["message"]["role"] == "user" and isinstance(e["message"]["content"], str)
-                 and not e["message"]["content"].startswith(HARNESS_TEXT)][-6:]
-        asked += [f"(answered a question from the agent) {e['a'][:1000]}" for e in events if e["kind"] == "answer"][-3:]
-        if self.goal and self.goal["status"] == "active":
-            asked.append(f"(goal) {self.goal['objective'][:2000]}")
+        asked, typed, answers = [], 0, 0  # newest first: the last 6 messages and 3 answers, in their real order
+        for e in reversed(self.session.events()):
+            c = e.get("message", {}).get("content")
+            if typed < 6 and e["kind"] == "msg" and e["message"]["role"] == "user" and isinstance(c, str) \
+                    and not e.get("by") and not c.startswith(HARNESS_TEXT):  # untagged: sessions older than the tag
+                asked, typed = [c[:2000]] + asked, typed + 1
+            elif answers < 3 and e["kind"] == "answer":
+                asked, answers = [f"(answered a question from the agent) {e['a'][:1000]}"] + asked, answers + 1
+        asked += [f"(goal) {self.goal['objective'][:2000]}"] if self.goal and self.goal["status"] == "active" else []
         state = (f"Working directory: {self.cwd}\n\nThe user's recent messages, oldest first:\n"
                  + "\n---\n".join(asked or ["(none)"]) + f"\n\nAction ({kind}):\n{detail}")
         req = urllib.request.Request(JUDGE_URL, json.dumps({"model": JUDGE_MODEL, "state": state, "questions": {

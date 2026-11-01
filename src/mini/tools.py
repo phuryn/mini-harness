@@ -5,7 +5,6 @@ A tool is a JSON schema the model sees and a Python function the harness runs.
 """
 import contextlib
 import os
-import re
 import shlex
 import signal
 import subprocess
@@ -18,8 +17,9 @@ class ToolError(Exception):
     pass
 
 
-def printable(text: str) -> str:
-    return "".join(c if c.isprintable() or c == "\n" else repr(c)[1:-1] for c in text)  # no hidden \r or escapes
+def printable(text: str, lines: bool = False) -> str:
+    """No hidden \r, escapes or blank-line padding; real line breaks only where asked (file content)."""
+    return "".join(c if c.isprintable() or lines and c == "\n" else repr(c)[1:-1] for c in text)
 
 
 def run_shell(command: str, cwd, timeout: int):
@@ -73,18 +73,17 @@ class Approver:
         if len(detail) > 4000:  # too long to review, by you or the judge, which must see the whole action
             self.reason = " Too long to review: split it into smaller steps."
             return False
-        words = re.split(r"[\s/'\";|&<>=()`]+", detail.casefold())  # files that run later: the user decides
-        if self.use_judge and self.judge and kind != "write" and not any(
-                w.startswith(".") and w.strip(".") or w in LocalTools.PROTECTED for w in words):
+        if self.use_judge and self.judge and kind != "write":  # gated writes run later: the user decides
             verdict, why = self.judge(kind, detail)
             self.reason = f" Judge: {why}"
             if verdict != "ask":
                 return verdict == "allow"
         if not self.interactive:
             return False
-        shown = printable(detail)
-        always = kind != "write"  # protected writes are asked one by one
-        hint = f"y/n/a=all {kind} calls until you quit" if always else "y/n"
+        shown = printable(detail, kind == "write")
+        always = kind != "write"  # protected writes are asked one by one; the path is repeated next to the answer
+        hint = f"y/n/a=all {kind} calls until you quit" if always else \
+            f"{printable(detail.splitlines()[0])}, {detail.count(chr(10))} lines · y/n"
         ans = input(f"\033[33m  allow {kind}: {shown}  [{hint}] \033[0m").strip().lower()
         if ans == "a" and always:
             self.always.add(kind)
