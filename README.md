@@ -44,14 +44,14 @@ Ctrl-C stops the current turn and keeps the session valid.
 
 | File | Lines | Job |
 |---|---|---|
-| `loop.py` | 342 | Model calls, tool dispatch, subagents, compaction, `/goal`, cost |
-| `cli.py` | 175 | REPL, slash commands, headless mode |
-| `tools.py` | 148 | read, write, edit, bash, approval gate |
+| `loop.py` | 346 | Model calls, tool dispatch, subagents, compaction, `/goal`, cost |
+| `cli.py` | 179 | REPL, slash commands, headless mode |
+| `tools.py` | 169 | read, write, edit, bash, approval gate |
 | `ext.py` | 90 | Skills discovery, MCP stdio hub |
-| `session.py` | 71 | JSONL session files |
+| `session.py` | 73 | JSONL session files |
 | `context.py` | 28 | The frozen system prompt |
 
-That's 856 lines of code (not counting blank lines, comments or docstrings), and about 80 of them are prompts and tool schemas.
+That's 887 lines of code (not counting blank lines, comments or docstrings), and about 120 of them are prompts, tool descriptions and schemas.
 
 ## How it works
 
@@ -71,9 +71,9 @@ That's 856 lines of code (not counting blank lines, comments or docstrings), and
 
 **Fallbacks.** Requests to Opus and Sonnet set `fallbacks: "default"`. If the model declines a request partway through, the API continues on another model in the same response. mini then runs only the tool calls that come after the `fallback` marker, and drops the declined model's unpaired calls and thinking, as Anthropic's guide says. Cost is computed for each model separately.
 
-**Tools.** `read`, `write`, `edit` and `bash`, plus server-side `web_search`. `edit` refuses to change a file that was modified since the model last read it, and `write` won't overwrite a file the model hasn't read. Search, git and tests go through `bash`.
+**Tools.** `read`, `write`, `edit` and `bash`, plus server-side `web_search`. Every request sends each tool's name, description and schema. The descriptions warn about the usual mistakes: copying `read`'s line-number prefix into `edit`, editing a file without reading it first, an `old` string that isn't unique, interactive commands, and a subagent that can't see the conversation. mini's own tools set `strict: true`, so the API guarantees their arguments match the schema. When a call still fails, the error says what to do next ("Read the file before editing it", "`old` appears 3 times, add context"), so the model fixes it on the next step. `edit` refuses to change a file that was modified since the model last read it, keeps Windows line endings, and `write` won't overwrite a file the model hasn't read. `read` refuses special files and files over 5 MB. Search, git and tests go through `bash`.
 
-**Approvals.** A short list of commands that can't run programs or write files (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `diff` and a few more) runs without asking, as long as it contains no shell operators or newlines. `find`, `rg` and `git` aren't on the list, because flags such as `-exec`, `--pre` and `--output` can run programs or write files. Any other bash command asks first. So does any write outside the working directory (every write, if you start mini in your home folder), and any write to a file that something else will run later: dot-folders such as `.git/` (git config can make `git status` run commands), `mcp.json`, `conftest.py`, `Makefile`, `package.json`, `pyproject.toml`, `GNUmakefile`, `justfile`, `tox.ini`, `noxfile.py`, and files named `HEAD` or `config`, because git treats any folder with those plus `objects/` and `refs/` as a repository. That list is a denylist of common runners, not a guarantee. The approval prompt shows the whole command, or the file content being written, with control characters escaped, and a command too long to review is denied. The check ignores case, because macOS file systems do. Every MCP tool call asks first. Headless mode denies anything not matched by `--allow`, which compares whole words, so `--allow "python3 -m pytest"` doesn't approve `python3 -c ...`. Writes elsewhere in the project are free, so allowing a test runner means the model can run code it wrote. `read` isn't restricted to the project either. This gate is not a sandbox.
+**Approvals.** A short list of commands that can't run programs or write files (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `diff` and a few more) runs without asking, as long as it contains no shell operators or newlines. `find`, `rg` and `git` aren't on the list, because flags such as `-exec`, `--pre` and `--output` can run programs or write files. Any other bash command asks first. So does any write outside the working directory (every write, if you start mini in your home folder), and any write to a file that something else will run later: dot-folders such as `.git/` (git config can make `git status` run commands), `mcp.json`, `conftest.py`, `Makefile`, `package.json`, `pyproject.toml`, `setup.py`, any existing executable file, `GNUmakefile`, `justfile`, `tox.ini`, `noxfile.py`, and files named `HEAD` or `config`, because git treats any folder with those plus `objects/` and `refs/` as a repository. That list is a denylist of common runners, not a guarantee. The approval prompt shows the whole command, or the file content being written, with control characters escaped, and a command too long to review is denied. The check ignores case, because macOS file systems do. Every MCP tool call asks first. Headless mode denies anything not matched by `--allow`, which compares whole words, so `--allow "python3 -m pytest"` doesn't approve `python3 -c ...`. Writes elsewhere in the project are free, so allowing a test runner means the model can run code it wrote. `read` isn't restricted to the project either. This gate is not a sandbox.
 
 **Memory and instructions.** At session start mini loads `AGENTS.md` (and only that file) plus `memory/INDEX.md`, which routes to area files such as `memory/decisions.md`. The model reads area files when a task touches them and updates them with `edit`. Changes take effect in the next session, because the prompt is frozen within a session.
 

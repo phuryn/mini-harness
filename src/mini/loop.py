@@ -18,7 +18,7 @@ import anthropic
 
 from .context import build_system
 from .session import Session
-from .tools import SCHEMAS, WEB_SEARCH, LocalTools, ToolError, run_shell, truncate
+from .tools import SCHEMAS, WEB_SEARCH, LocalTools, ToolError, run_shell, schema, truncate
 
 MAIN_MODEL = os.environ.get("MINI_MODEL", "claude-opus-5-5")
 SUB_MODEL = "claude-sonnet-5-5"
@@ -43,16 +43,19 @@ GOAL_OFF = "Goal mode is off (status: {status}). Earlier goal instructions no lo
 
 EXTRA_SCHEMAS = {
     "task": {
-        "description": "Delegate a self-contained research or reading task to a subagent with a fresh context and "
-                       "read, bash and web_search. It returns only its final answer, so give it everything it needs.",
-        "input_schema": {"type": "object", "properties": {
-            "prompt": {"type": "string"},
-            "model": {"type": "string", "enum": ["claude-sonnet-5-5", "claude-haiku-5-5"],
-                      "description": "Default claude-sonnet-5-5; haiku for plain reading or search"}},
-            "required": ["prompt"]}},
+        "description": "Delegate a self-contained research or reading task to a subagent. It starts with an empty "
+                       "context: it can't see this conversation, so the prompt must include every path, fact and "
+                       "constraint it needs. It has read, bash and web_search, doesn't change files, and returns "
+                       "only its final answer.",
+        **schema({"prompt": {"type": "string"},
+                  "model": {"type": "string", "enum": ["claude-sonnet-5-5", "claude-haiku-5-5"],
+                            "description": "Default claude-sonnet-5-5; claude-haiku-5-5 for plain reading or search"}},
+                 ["prompt"])},
     "goal_done": {
-        "description": "Declare the active goal complete. Only call when it is fully met and checked.",
-        "input_schema": {"type": "object", "properties": {"evidence": {"type": "string"}}, "required": ["evidence"]}},
+        "description": "Declare the active goal complete. Only call it when the goal is fully met and you have "
+                       "checked it. If the user set a verify command, the harness runs it and sends you its output "
+                       "if it fails.",
+        **schema({"evidence": {"type": "string", "description": "What you ran and what it showed"}}, ["evidence"])},
 }
 
 
@@ -66,7 +69,8 @@ def clean(blocks: list[dict]) -> list[dict]:
     answered = {b.get("tool_use_id") for b in blocks}
     keep = lambda b: b["type"] == "text" or b["type"].endswith("_tool_result") or (
         b["type"] == "server_tool_use" and b["id"] in answered)
-    return [b for b in blocks[:max(cut, 0)] if keep(b)] + blocks[max(cut, 0):]
+    # The fallback marker itself is optional to echo; dropping it keeps later requests free of its beta.
+    return [b for b in blocks[:max(cut, 0)] if keep(b)] + blocks[cut + 1:]
 
 
 class Agent:
@@ -107,7 +111,8 @@ class Agent:
     def add_user(self, content):
         self.add({"role": "user", "content": content})
         if self.pending_system:  # one system message, right after a user message
-            self.add({"role": "system", "content": "\n\n".join(dict.fromkeys(self.pending_system))})
+            latest = list(dict.fromkeys(reversed(self.pending_system)))[::-1]  # a repeat keeps its latest position
+            self.add({"role": "system", "content": "\n\n".join(latest)})
         self.pending_system = []
 
     def placeholder(self, why: str):
@@ -206,14 +211,14 @@ class Agent:
                     continue
                 self.placeholder("a server tool kept pausing; stopped")
                 return "pause_turn"
-            if resp.stop_reason == "refusal" or all(b["type"] == "fallback" for b in blocks):
+            if resp.stop_reason == "refusal" or not blocks:
                 # a refused partial is discarded; an empty assistant message would 400 every later request
                 self.placeholder(f"no content: {resp.stop_reason}" if not blocks else "declined")
                 blocks = []  # nothing of the declined reply is in the transcript, so no tool calls to answer
             else:
-                for p in paused:
-                    self.add(p)
-                self.add({"role": "assistant", "content": blocks})
+                done = paused + [{"role": "assistant", "content": blocks}]
+                self.session.append("msgs", messages=done)  # one line: a crash can't split a paused search
+                self.messages.extend(done)
             paused = []
             self.ui.end_message()
             uses = [b for b in blocks if b["type"] == "tool_use"]

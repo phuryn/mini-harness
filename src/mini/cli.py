@@ -113,7 +113,11 @@ def main():
         session = Session.find(cwd, args.resume)
         if not session:
             sys.exit("No session found.")
-    new = lambda s: Agent(cwd, s, ui, approver, hub=hub, skills=skills, model=args.model, effort=args.effort)
+    def new(s):
+        agent = Agent(cwd, s, ui, approver, hub=hub, skills=skills, model=args.model, effort=args.effort)
+        agent.goal_defaults = {"verify": args.verify, "max_turns": args.max_turns, "budget": args.budget}
+        return agent
+
     agent = new(session or Session.create(cwd))
 
     try:
@@ -193,7 +197,8 @@ def command(agent, line, new):
             else:
                 print("No paused goal.")
         else:
-            print_goal(agent.set_goal(rest))
+            print_goal(agent.set_goal(rest, agent.goal_defaults.get("verify"), agent.goal_defaults.get("max_turns", 25),
+                                      agent.goal_defaults.get("budget")))
     elif cmd.startswith("/"):
         print(f"Unknown command {cmd}. /help lists them.")
     else:

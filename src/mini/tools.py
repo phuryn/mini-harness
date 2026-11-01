@@ -109,10 +109,18 @@ class LocalTools:
         parts = [x.casefold() for x in path.relative_to(self.cwd).parts]
         return not any(x.startswith(".") for x in parts) and parts[-1] not in self.PROTECTED
 
+    def _ask(self, path: Path) -> bool:
+        """Writes need approval outside the project, into protected files, or over an executable."""
+        return not self._inside(path) or (path.exists() and os.access(path, os.X_OK))
+
     def read(self, path: str, offset: int = 1, limit: int = 2000) -> str:
         p = self._path(path)
         if p.is_dir():
             return "\n".join(sorted(x.name + ("/" if x.is_dir() else "") for x in p.iterdir()))
+        if not p.is_file():
+            raise ToolError("Not a regular file.")
+        if p.stat().st_size > 5_000_000:
+            raise ToolError("File is over 5 MB. Use bash (head, tail, grep) to look at parts of it.")
         lines = p.read_text(errors="replace").splitlines()
         self.seen[p] = p.stat().st_mtime
         start = max(offset, 1)
@@ -125,7 +133,7 @@ class LocalTools:
         p = self._path(path)
         if p.exists() and p.stat().st_mtime != self.seen.get(p):
             raise ToolError("File exists and you haven't read its current version. Read it first, or use edit.")
-        if not self._inside(p) and not self.approver.ok("write", f"{p}\n{preview(content)}"):
+        if self._ask(p) and not self.approver.ok("write", f"{p}\n{preview(content)}"):
             raise ToolError("User denied this write (outside the project, or a file that runs later).")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
@@ -138,17 +146,20 @@ class LocalTools:
             raise ToolError("Read the file before editing it.")
         if p.stat().st_mtime != self.seen[p]:
             raise ToolError("File changed since you last read it. Read it again.")
-        if not self._inside(p) and not self.approver.ok("write", f"{p}\n- {preview(old)}\n+ {preview(new)}"):
+        if self._ask(p) and not self.approver.ok("write", f"{p}\n- {preview(old)}\n+ {preview(new)}"):
             raise ToolError("User denied this edit (outside the project, or a file that runs later).")
         if not old:
             raise ToolError("`old` must not be empty.")
-        text = p.read_text()
+        with p.open(newline="") as f:  # keep the file's own line endings
+            text = f.read()
+        if "\r\n" in text and "\r\n" not in old:
+            old, new = old.replace("\n", "\r\n"), new.replace("\n", "\r\n")
         n = text.count(old)
         if n == 0:
             raise ToolError("`old` not found. It must match the file exactly, including whitespace.")
         if n > 1 and not replace_all:
             raise ToolError(f"`old` appears {n} times. Add context to make it unique, or set replace_all.")
-        p.write_text(text.replace(old, new) if replace_all else text.replace(old, new, 1))
+        p.write_text(text.replace(old, new) if replace_all else text.replace(old, new, 1), newline="")
         self.seen[p] = p.stat().st_mtime
         return f"Edited {p} ({n if replace_all else 1} replaced)"
 
@@ -163,27 +174,42 @@ class LocalTools:
         return f"{out}\n[exit {code}]" if code else (out or "[no output]")
 
 
+def schema(props: dict, required: list) -> dict:
+    """strict: the API guarantees inputs match the schema, so calls never fail on argument shape."""
+    return {"strict": True, "input_schema": {"type": "object", "properties": props, "required": required,
+                                             "additionalProperties": False}}
+
+
 SCHEMAS = {
     "read": {
-        "description": "Read a text file (numbered lines) or list a directory.",
-        "input_schema": {"type": "object", "properties": {
-            "path": {"type": "string"},
-            "offset": {"type": "integer", "description": "First line, 1-based"},
-            "limit": {"type": "integer"}}, "required": ["path"]}},
+        "description": "Read a text file, or list a directory. Paths are relative to the working directory. Output "
+                       "lines start with a line number and a tab; that prefix is not part of the file. Long files "
+                       "come in pages: pass offset to continue.",
+        **schema({"path": {"type": "string"},
+                  "offset": {"type": "integer", "description": "First line to show, 1-based (default 1)"},
+                  "limit": {"type": "integer", "description": "Lines to show (default 2000)"}}, ["path"])},
     "write": {
-        "description": "Create a file, or overwrite one you have read.",
-        "input_schema": {"type": "object", "properties": {
-            "path": {"type": "string"}, "content": {"type": "string"}}, "required": ["path", "content"]}},
+        "description": "Create a file, or replace a whole file. To overwrite an existing file, read it first; for "
+                       "small changes use edit. Writing outside the working directory, into dot-folders, or to "
+                       "files that run later (Makefile, conftest.py, mcp.json, executables) asks the user, who may say no.",
+        **schema({"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"])},
     "edit": {
-        "description": "Replace an exact string in a file you have read. `old` must be unique unless replace_all.",
-        "input_schema": {"type": "object", "properties": {
-            "path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"},
-            "replace_all": {"type": "boolean"}}, "required": ["path", "old", "new"]}},
+        "description": "Replace exact text in a file you have read since it last changed. `old` must match the file "
+                       "character for character, including indentation, and must not include the line-number "
+                       "prefixes that read shows. It must occur once, unless replace_all is true; add surrounding "
+                       "lines to make it unique.",
+        **schema({"path": {"type": "string"}, "old": {"type": "string"}, "new": {"type": "string"},
+                  "replace_all": {"type": "boolean", "description": "Replace every occurrence (default false)"}},
+                 ["path", "old", "new"])},
     "bash": {
-        "description": "Run a shell command in the working directory. Use it for search (grep, find), git and tests.",
-        "input_schema": {"type": "object", "properties": {
-            "command": {"type": "string"}, "timeout": {"type": "integer", "description": "Seconds, default 120"}},
-            "required": ["command"]}},
+        "description": "Run a shell command in the working directory and get stdout, stderr and the exit code. Use "
+                       "it for search (grep, find), git, tests and builds. There is no terminal: commands get no "
+                       "input, so interactive programs end at once. Output over 30,000 characters is cut in the "
+                       "middle. Most commands ask the user first and can be denied; plain reads such as ls, cat, "
+                       "grep and head without pipes or redirects run without asking.",
+        **schema({"command": {"type": "string"},
+                  "timeout": {"type": "integer", "description": "Seconds before the command is killed (default 120)"}},
+                 ["command"])},
 }
 
 WEB_SEARCH = {"type": "web_search_20260209", "name": "web_search"}

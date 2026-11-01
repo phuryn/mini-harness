@@ -62,6 +62,8 @@ class Session:
                 meta = e
             elif e["kind"] == "msg":
                 messages.append(e["message"])
+            elif e["kind"] == "msgs":  # several messages that only make sense together
+                messages.extend(e["messages"])
             elif e["kind"] == "compact":
                 messages, context = [e["message"]], 0
             elif e["kind"] == "goal":

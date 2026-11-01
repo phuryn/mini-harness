@@ -379,7 +379,7 @@ def test_fallback_partial_is_not_run_or_echoed(ws, monkeypatch):
     agent.turn("go")
     assert ran == ["echo kept"]
     echoed = client.requests[1]["messages"][1]["content"]
-    assert [b["type"] for b in echoed] == ["text", "fallback", "text", "tool_use"]
+    assert [b["type"] for b in echoed] == ["text", "text", "tool_use"]
 
 
 def test_goal_rules_restated_on_resume_after_compaction(ws):
@@ -661,3 +661,72 @@ def test_protected_write_prompt_shows_the_content(ws, monkeypatch):
     with pytest.raises(ToolError):
         LocalTools(str(ws), Approver()).write("conftest.py", "import os; os.system('evil')")
     assert "os.system" in shown[0]
+
+
+# --- tool definitions and review round 6 --------------------------------------
+
+def test_local_tools_are_strict_and_explain_their_pitfalls(ws):
+    agent, _, _ = make(ws, [])
+    tools = {t["name"]: t for t in agent.tools}
+    for name in ["read", "write", "edit", "bash", "task", "goal_done"]:
+        assert tools[name]["strict"] is True
+        assert tools[name]["input_schema"]["additionalProperties"] is False
+        assert set(tools[name]["input_schema"]["required"]) <= set(tools[name]["input_schema"]["properties"])
+    assert "line-number" in tools["edit"]["description"]
+    assert "can't see this conversation" in tools["task"]["description"]
+    assert "no input" in tools["bash"]["description"]
+
+
+def test_paused_and_final_reply_are_one_session_line(ws):
+    paused = reply({"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search", "input": {"query": "x"}},
+                   stop="pause_turn")
+    done = reply({"type": "web_search_tool_result", "tool_use_id": "srvtoolu_1", "content": []}, text("found"))
+    agent, _, _ = make(ws, [paused, done])
+    agent.turn("search")
+    kinds = [e["kind"] for e in agent.session.events()]
+    assert kinds.count("msgs") == 1
+    assert Session(agent.session.path).load()[1] == agent.messages
+
+
+def test_goal_rules_win_over_an_earlier_off_notice(ws):
+    agent, client, _ = make(ws, [reply(text("hi"))])
+    agent.goal = {"objective": "x", "status": "paused", "turns": 0, "max_turns": 5, "verify": None,
+                  "budget": None, "spent": 0.0, "note": ""}
+    agent.pending_system = [agent.goal_rules(), "Goal mode is off (status: paused).", agent.goal_rules()]
+    agent.turn("go")
+    content = client.requests[0]["messages"][1]["content"]
+    assert content.rstrip().endswith(agent.goal_rules().rstrip())
+
+
+def test_repl_goal_uses_command_line_limits(ws):
+    from mini.cli import command
+    agent, _, _ = make(ws, [reply(tool("goal_done", {"evidence": "e"}), stop="tool_use"), reply(text("done")),
+                            reply(text("BLOCKED: tests fail"))])
+    agent.goal_defaults = {"verify": "false", "max_turns": 7, "budget": None}
+    command(agent, "/goal make it pass", lambda s: agent)
+    assert agent.goal["verify"] == "false" and agent.goal["status"] == "paused"
+
+
+def test_edit_keeps_windows_line_endings(ws):
+    f = ws / "w.txt"
+    f.write_bytes(b"a\r\nb\r\nc\r\n")
+    tools = LocalTools(str(ws), Approver(auto=True))
+    tools.read("w.txt")
+    tools.edit("w.txt", "a\nb", "a\nB")
+    assert f.read_bytes() == b"a\r\nB\r\nc\r\n"
+
+
+def test_overwriting_an_executable_needs_approval(ws):
+    f = ws / "run.sh"
+    f.write_text("echo hi")
+    f.chmod(0o755)
+    tools = LocalTools(str(ws), Approver(interactive=False))
+    tools.read("run.sh")
+    with pytest.raises(ToolError, match="denied"):
+        tools.write("run.sh", "rm -rf ~")
+
+
+def test_read_refuses_huge_and_special_files(ws):
+    tools = LocalTools(str(ws), Approver(auto=True))
+    with pytest.raises(ToolError, match="regular file"):
+        tools.read("/dev/zero")
