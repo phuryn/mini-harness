@@ -555,3 +555,59 @@ def test_malformed_mcp_json_is_reported(ws):
 def test_empty_allow_entry_approves_nothing(ws):
     ap = Approver(interactive=False, allow=("",))
     assert not ap.ok("bash", "rm -rf x") and not ap.ok("mcp", "mcp__x__y {}")
+
+
+# --- review round 4 regressions -----------------------------------------------
+
+def test_refusal_with_tool_call_leaves_no_orphan_result(ws):
+    agent, client, _ = make(ws, [reply(tool("bash", {"command": "echo x"}), stop="refusal"), reply(text("ok"))])
+    agent.turn("x")
+    agent.turn("y")
+    msgs = client.requests[-1]["messages"]
+    assert not any(isinstance(m["content"], list) and m["content"] and m["content"][0].get("type") == "tool_result"
+                   for m in msgs)
+
+
+def test_append_after_cut_off_line_is_not_lost(ws):
+    s = Session.create(str(ws))
+    s.append("msg", message={"role": "user", "content": "a"})
+    with s.path.open("a") as f:
+        f.write('{"kind": "msg", "mess')
+    s.append("msg", message={"role": "assistant", "content": [{"type": "text", "text": "b"}]})
+    assert [m["role"] for m in s.load()[1]] == ["user", "assistant"]
+
+
+def test_goal_left_active_by_a_killed_process_is_paused_on_resume(ws):
+    agent, _, _ = make(ws, [])
+    agent.goal = {"objective": "x", "status": "active", "turns": 1, "max_turns": 5, "verify": None,
+                  "budget": None, "spent": 0.0, "note": ""}
+    agent.save_goal()
+    agent.add_user("go")
+    agent.add({"role": "system", "content": "Goal mode is on. Objective: x"})
+    again, client, _ = make(ws, [reply(text("hi"))], session=Session(agent.session.path))
+    assert again.goal["status"] == "paused"
+    again.turn("chat")
+    assert "Goal mode is off" in [m for m in client.requests[-1]["messages"] if m["role"] == "system"][-1]["content"]
+
+
+def test_approval_prompt_shows_everything_escaped(ws, monkeypatch):
+    shown = []
+    monkeypatch.setattr("builtins.input", lambda p: shown.append(p) or "n")
+    ap = Approver()
+    ap.ok("bash", "echo " + "a" * 300 + "\r; rm -rf ~")
+    assert "rm -rf ~" in shown[0] and "\\r" in shown[0] and "\r" not in shown[0]
+    assert not ap.ok("bash", "x" * 5000)
+
+
+def test_gnumakefile_is_protected(ws):
+    with pytest.raises(ToolError, match="denied"):
+        LocalTools(str(ws), Approver(interactive=False)).write("GNUmakefile", "x")
+
+
+def test_failed_compaction_backs_off(ws, monkeypatch):
+    monkeypatch.setattr("mini.loop.COMPACT_AT", 500)
+    agent, client, _ = make(ws, [reply(text("x"), u=usage(inp=1000)), reply(stop="max_tokens")])
+    agent.turn("hi")
+    agent.maybe_compact()
+    agent.maybe_compact()
+    assert len(client.beta.messages.creates) == 1

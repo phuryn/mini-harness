@@ -75,13 +75,16 @@ class Agent:
         self.cwd, self.session, self.ui, self.approver, self.hub = cwd, session, ui, approver, hub
         self.client = client or anthropic.Anthropic()
         self.local = LocalTools(cwd, approver)
-        self.effort = effort
+        self.effort, self.compact_failed_at = effort, 0
         self.pending_system: list[str] = []
         self.goal_claim = None
         meta, self.messages, self.goal, self.cost, self.last_context = session.load()
         if meta:  # resume: replay the frozen prompt and tools byte for byte
             self.model, self.system, self.tools = meta["model"], meta["system"], meta["tools"]
             self.repair()
+            if self.goal and self.goal["status"] == "active":  # nothing runs it in a fresh process
+                self.goal["status"], self.goal["note"] = "paused", "interrupted"
+                self.save_goal()
             said = "\n".join(m["content"] for m in self.messages if m["role"] == "system")
             if said.rfind("Goal mode is on") > said.rfind("Goal mode is off") and not (self.goal and self.goal["status"] == "active"):
                 self.pending_system.append(GOAL_OFF.format(status=self.goal["status"] if self.goal else "cleared"))
@@ -195,6 +198,7 @@ class Agent:
             if resp.stop_reason == "refusal" or all(b["type"] == "fallback" for b in blocks):
                 # a refused partial is discarded; an empty assistant message would 400 every later request
                 self.placeholder(f"no content: {resp.stop_reason}" if not blocks else "declined")
+                blocks = []  # nothing of the declined reply is in the transcript, so no tool calls to answer
             else:
                 self.add({"role": "assistant", "content": blocks})
             self.track(resp)
@@ -208,7 +212,7 @@ class Agent:
                 if interrupted:
                     return "interrupted"
                 if resp.stop_reason == "tool_use":
-                    if self.last_context > COMPACT_AT and self.compact():  # long tool loops must not outgrow the window
+                    if self.should_compact() and self.compact():  # long tool loops must not outgrow the window
                         self.add_user("Context was compacted. Continue the current task from the summary.")
                     continue
             if resp.stop_reason == "refusal":
@@ -251,7 +255,7 @@ class Agent:
             self.goal_claim = args.get("evidence", "")
             return "Recorded. The harness will check it after this turn."
         if name.startswith("mcp__") and self.hub and name in self.hub.tools:
-            if not self.approver.ok("mcp", f"{name} {json.dumps(args)[:200]}"):
+            if not self.approver.ok("mcp", f"{name} {json.dumps(args)}"):
                 raise ToolError("User denied this tool call.")
             out, is_err = self.hub.call(name, args)
             if is_err:
@@ -285,10 +289,12 @@ class Agent:
                 betas=list(BETAS))
         except Exception as e:
             self.ui.warn(f"compaction failed: {e}")
+            self.compact_failed_at = self.last_context
             return False
         self.track(resp)
         if resp.stop_reason != "compaction":
             self.ui.warn(f"no summary came back ({resp.stop_reason}); keeping the full history")
+            self.compact_failed_at = self.last_context
             return False
         msg = {"role": "assistant", "content": [b.to_dict(exclude_none=True) for b in resp.content]}
         self.messages = [msg]
@@ -299,8 +305,12 @@ class Agent:
             self.pending_system.append(self.goal_rules())
         return True
 
+    def should_compact(self):
+        # after a failed compaction, wait until the context has grown another 20% before retrying
+        return self.last_context > max(COMPACT_AT, self.compact_failed_at * 1.2)
+
     def maybe_compact(self):
-        if self.last_context > COMPACT_AT:
+        if self.should_compact():
             self.ui.note(f"context at {self.last_context:,} tokens, compacting")
             self.compact()
 

@@ -38,8 +38,10 @@ class Session:
         return cls(files[0]) if files else None
 
     def append(self, kind: str, **data):
-        with self.path.open("a") as f:
-            f.write(json.dumps({"t": time.time(), "kind": kind, **data}) + "\n")
+        with self.path.open("a+b") as f:
+            if f.tell() and (f.seek(-1, 2), f.read(1))[1] != b"\n":  # a crash cut the last line; don't glue onto it
+                f.write(b"\n")
+            f.write((json.dumps({"t": time.time(), "kind": kind, **data}) + "\n").encode())
 
     def events(self):
         if not self.path.exists():

@@ -122,6 +122,7 @@ def main():
                 g = agent.set_goal(args.goal, args.verify, args.max_turns, args.budget)
                 result = {"status": g["status"], "note": g["note"], "turns": g["turns"]}
             else:
+                agent.maybe_compact()
                 result = {"stop": agent.turn(args.prompt)}
             if args.json:
                 print(json.dumps({**result, "session": agent.session.id, "cost": round(agent.cost, 4),

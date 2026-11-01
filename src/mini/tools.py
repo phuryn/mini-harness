@@ -64,9 +64,12 @@ class Approver:
             return True
         if not self.interactive:
             return False
+        if len(detail) > 4000:
+            return False  # too long to review on a terminal
+        shown = "".join(c if c.isprintable() else repr(c)[1:-1] for c in detail)  # no hidden \r or escapes
         always = kind != "write"  # protected writes are asked one by one
-        hint = f"y/n/a=all {kind} calls this session" if always else "y/n"
-        ans = input(f"\033[33m  allow {kind}: {detail[:200]}  [{hint}] \033[0m").strip().lower()
+        hint = f"y/n/a=all {kind} calls until you quit" if always else "y/n"
+        ans = input(f"\033[33m  allow {kind}: {shown}  [{hint}] \033[0m").strip().lower()
         if ans == "a" and always:
             self.always.add(kind)
         return ans in ("y", "yes") or (ans == "a" and always)
@@ -84,7 +87,9 @@ class LocalTools:
 
     # Files something else executes later; "head" and "config" because git treats any folder with
     # HEAD, config, objects/ and refs/ as a repository and runs hooks from its config.
-    PROTECTED = {"mcp.json", "conftest.py", "makefile", "package.json", "pyproject.toml", "setup.py", "head", "config"}
+    # This is a denylist: it covers common runners, not every tool that reads a file from the project.
+    PROTECTED = {"mcp.json", "conftest.py", "makefile", "gnumakefile", "justfile", "package.json", "pyproject.toml",
+                 "setup.py", "noxfile.py", "tox.ini", "head", "config"}
 
     def _inside(self, path: Path) -> bool:
         """Free to write: inside the working directory, and not a file something else will execute later
