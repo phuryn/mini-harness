@@ -33,12 +33,9 @@ class Session:
 
     @classmethod
     def find(cls, cwd: str, sid: str | None = None) -> "Session | None":
-        """Latest session, or one whose id starts with `sid`."""
-        files = sorted(project_dir(cwd).glob("*.jsonl"), key=lambda p: p.stat().st_mtime)
-        files = [f for f in files if "-sub" not in f.stem]
-        if sid:
-            files = [f for f in files if f.stem.startswith(sid)]
-        return cls(files[-1]) if files else None
+        """Latest session, or the latest one whose id starts with `sid`."""
+        files = [f for f in sessions(cwd) if f.stem.startswith(sid or "")]
+        return cls(files[0]) if files else None
 
     def append(self, kind: str, **data):
         with self.path.open("a") as f:
@@ -50,8 +47,8 @@ class Session:
         return [json.loads(line) for line in self.path.read_text().splitlines() if line.strip()]
 
     def load(self):
-        """Return (meta, messages, goal) rebuilt from the log."""
-        meta, messages, goal = None, [], None
+        """Return (meta, messages, goal, cost) rebuilt from the log."""
+        meta, messages, goal, cost = None, [], None, 0.0
         for e in self.events():
             if e["kind"] == "meta":
                 meta = e
@@ -60,15 +57,21 @@ class Session:
             elif e["kind"] == "compact":
                 messages = [e["message"]]
             elif e["kind"] == "goal":
-                goal = e["goal"]
-        return meta, messages, goal
+                goal = e["goal"] if e["goal"]["status"] != "cleared" else None
+            elif e["kind"] == "usage":
+                cost += e.get("cost", 0)
+        return meta, messages, goal, cost
+
+
+def sessions(cwd: str) -> list[Path]:
+    """Top-level sessions for this directory, newest first (subagent logs excluded)."""
+    files = [p for p in project_dir(cwd).glob("*.jsonl") if "-sub" not in p.stem]
+    return sorted(files, key=lambda p: p.stat().st_mtime, reverse=True)
 
 
 def list_sessions(cwd: str, limit: int = 15):
     rows = []
-    for p in sorted(project_dir(cwd).glob("*.jsonl"), key=lambda p: p.stat().st_mtime, reverse=True):
-        if "-sub" in p.stem:
-            continue
+    for p in sessions(cwd)[:limit]:
         first, turns, cost = "", 0, 0.0
         for e in Session(p).events():
             if e["kind"] == "msg" and e["message"]["role"] == "user":
@@ -79,6 +82,4 @@ def list_sessions(cwd: str, limit: int = 15):
             elif e["kind"] == "usage":
                 cost += e.get("cost", 0)
         rows.append((p.stem, turns, cost, first.replace("\n", " ")[:60]))
-        if len(rows) >= limit:
-            break
     return rows

@@ -4,6 +4,7 @@ A tool is a JSON schema the model sees and a Python function the harness runs.
 `edit` refuses to touch a file that changed since the model last read it.
 """
 import os
+import shlex
 import subprocess
 from pathlib import Path
 
@@ -24,16 +25,25 @@ def truncate(text: str) -> str:
 class Approver:
     """Asks before risky calls. `auto=True` approves everything (headless --yes)."""
 
-    SAFE = ("ls", "cat ", "head ", "tail ", "wc ", "grep ", "rg ", "find ", "pwd", "git status",
-            "git diff", "git log", "git show", "echo ")
+    # Commands that can't run other programs or write files, whatever their flags.
+    SAFE = {"ls", "cat", "head", "tail", "wc", "pwd", "grep", "echo", "which", "file", "stat", "diff"}
+    SHELL = set(";&|<>`$(){}\n\r\\")
 
     def __init__(self, auto: bool = False, interactive: bool = True, allow: tuple = ()):
-        self.auto, self.interactive, self.always, self.allow = auto, interactive, set(), tuple(allow)
+        self.auto, self.interactive, self.always = auto, interactive, set()
+        self.allow = [shlex.split(a) for a in allow]
+
+    def pre_approved(self, command: str) -> bool:
+        if self.SHELL & set(command):
+            return False
+        try:
+            words = shlex.split(command)
+        except ValueError:
+            return False
+        return bool(words) and (words[0] in self.SAFE or any(words[:len(a)] == a for a in self.allow))
 
     def ok(self, kind: str, detail: str) -> bool:
-        if self.auto or kind in self.always:
-            return True
-        if kind == "bash" and detail.startswith(self.SAFE + self.allow) and not any(c in detail for c in ";&|><`$"):
+        if self.auto or kind in self.always or (kind == "bash" and self.pre_approved(detail)):
             return True
         if not self.interactive:
             return False
@@ -54,7 +64,8 @@ class LocalTools:
         return (path if path.is_absolute() else self.cwd / path).resolve()
 
     def _inside(self, path: Path) -> bool:
-        return path == self.cwd or self.cwd in path.parents
+        """Inside the working directory, and not in .git (git config can run commands)."""
+        return self.cwd in path.parents and ".git" not in path.relative_to(self.cwd).parts
 
     def read(self, path: str, offset: int = 1, limit: int = 2000) -> str:
         p = self._path(path)
@@ -70,8 +81,8 @@ class LocalTools:
 
     def write(self, path: str, content: str) -> str:
         p = self._path(path)
-        if p.exists() and p not in self.seen:
-            raise ToolError("File exists. Read it first, or use edit.")
+        if p.exists() and p.stat().st_mtime != self.seen.get(p):
+            raise ToolError("File exists and you haven't read its current version. Read it first, or use edit.")
         if not self._inside(p) and not self.approver.ok("write", str(p)):
             raise ToolError("User denied writing outside the working directory.")
         p.parent.mkdir(parents=True, exist_ok=True)
@@ -87,6 +98,8 @@ class LocalTools:
             raise ToolError("File changed since you last read it. Read it again.")
         if not self._inside(p) and not self.approver.ok("write", str(p)):
             raise ToolError("User denied editing outside the working directory.")
+        if not old:
+            raise ToolError("`old` must not be empty.")
         text = p.read_text()
         n = text.count(old)
         if n == 0:
@@ -95,7 +108,7 @@ class LocalTools:
             raise ToolError(f"`old` appears {n} times. Add context to make it unique, or set replace_all.")
         p.write_text(text.replace(old, new) if replace_all else text.replace(old, new, 1))
         self.seen[p] = p.stat().st_mtime
-        return f"Edited {p} ({n if replace_all else 1} replacement{'s' if replace_all and n > 1 else ''})"
+        return f"Edited {p} ({n if replace_all else 1} replaced)"
 
     def bash(self, command: str, timeout: int = 120) -> str:
         if not self.approver.ok("bash", command):

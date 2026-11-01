@@ -7,6 +7,7 @@ MCP servers are async; the harness is not. A background event loop owns the
 connections, and calls cross over with run_coroutine_threadsafe.
 """
 import asyncio
+import concurrent.futures
 import json
 import re
 import threading
@@ -46,11 +47,14 @@ class MCPHub:
         self.stop = self._run(self._make_event())
         self.tasks = []
         for name, spec in self.servers.items():
-            ready = self.loop.create_future()
-            self.tasks.append(asyncio.run_coroutine_threadsafe(self._serve(name, spec, ready), self.loop))
+            ready = concurrent.futures.Future()
+            task = asyncio.run_coroutine_threadsafe(self._serve(name, spec, ready), self.loop)
+            self.tasks.append(task)
             try:
-                self._run(asyncio.wait_for(asyncio.shield(ready), 30))
+                ready.result(30)
             except Exception as e:  # one broken server must not stop the harness
+                ready.cancel()
+                task.cancel()
                 self.errors.append(f"{name}: {e!r}"[:200])
 
     def _run(self, coro, timeout=None):
@@ -67,7 +71,10 @@ class MCPHub:
         try:
             async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
                 await session.initialize()
-                for t in (await session.list_tools()).tools:
+                listed = (await session.list_tools()).tools
+                if ready.done():  # startup already timed out; don't register late tools
+                    return
+                for t in listed:
                     api = f"mcp__{safe_name(name)}__{safe_name(t.name)}"[:128]
                     self.tools[api] = (session, t.name)
                     self.schemas.append({"name": api, "description": (t.description or "")[:1024],
@@ -80,7 +87,12 @@ class MCPHub:
 
     def call(self, api_name: str, args: dict) -> tuple[str, bool]:
         session, real = self.tools[api_name]
-        r = self._run(session.call_tool(real, args), timeout=300)
+        fut = asyncio.run_coroutine_threadsafe(session.call_tool(real, args), self.loop)
+        try:
+            r = fut.result(300)
+        except BaseException:  # timeout or Ctrl-C: don't leave the call running
+            fut.cancel()
+            raise
         parts = [getattr(c, "text", None) or f"[{c.type} content]" for c in getattr(r, "content", [])]
         return "\n".join(parts) or "[no output]", bool(getattr(r, "is_error", False))
 

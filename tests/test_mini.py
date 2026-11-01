@@ -141,7 +141,7 @@ def test_compaction_swaps_history_for_the_block(ws):
     msgs = client.requests[-1]["messages"]
     assert msgs[0] == {"role": "assistant", "content": [block]}
     assert msgs[1] == {"role": "user", "content": "next"}
-    _, loaded, _ = Session(agent.session.path).load()
+    _, loaded, _, _ = Session(agent.session.path).load()
     assert loaded == agent.messages
     assert client.requests[-1]["system"] == client.requests[0]["system"]
 
@@ -218,7 +218,7 @@ def test_dropped_thinking_blocks_are_reported(ws):
     drop = [{"type": "thinking_dropped", "path": "messages.1.content.0", "reason": "prefix_binding_mismatch"}]
     agent, _, ui = make(ws, [reply(text("x"), transformations=drop)])
     agent.turn("hi")
-    assert any("prefix_binding_mismatch" in w for w in ui.warnings)
+    assert any("history was edited" in w for w in ui.warnings)
     kinds = [e["kind"] for e in agent.session.events()]
     assert "transform" in kinds
 
@@ -273,12 +273,36 @@ def test_write_will_not_clobber_unread_file(ws):
 
 
 def test_headless_approver_denies_unlisted_commands(ws):
-    ap = Approver(interactive=False, allow=("pytest",))
+    ap = Approver(interactive=False, allow=("python3 -m pytest",))
     assert ap.ok("bash", "ls -la")
-    assert ap.ok("bash", "pytest -q")
-    assert not ap.ok("bash", "rm -rf build")
-    assert not ap.ok("bash", "pytest; rm -rf /")
+    assert ap.ok("bash", "python3 -m pytest -q")
+    for bad in ["rm -rf build", "python3 -m pytest; rm -rf /", "ls\nrm -rf x", "find . -delete",
+                "rg --pre /bin/sh x", "git diff --output=x", "git status", "lsof", "python3 -c 1",
+                "cat $(whoami)", "echo hi > f"]:
+        assert not ap.ok("bash", bad), bad
     assert not ap.ok("write", "/etc/hosts")
+
+
+def test_writes_into_dot_git_need_approval(ws):
+    (ws / ".git").mkdir()
+    tools = LocalTools(str(ws), Approver(interactive=False))
+    with pytest.raises(ToolError, match="denied"):
+        tools.write(".git/config", "[core]\n fsmonitor = evil")
+    assert tools.write("ok.txt", "fine")
+
+
+def test_write_needs_current_version_and_edit_needs_old(ws):
+    tools = LocalTools(str(ws), Approver(auto=True))
+    f = ws / "f.txt"
+    f.write_text("v1")
+    tools.read("f.txt")
+    import os
+    os.utime(f, (1, 1))
+    with pytest.raises(ToolError, match="current version"):
+        tools.write("f.txt", "v2")
+    tools.read("f.txt")
+    with pytest.raises(ToolError, match="empty"):
+        tools.edit("f.txt", "", "x", replace_all=True)
 
 
 def test_bash_reports_exit_code(ws):
@@ -317,3 +341,74 @@ def test_broken_mcp_server_does_not_stop_startup(ws):
     hub = MCPHub(str(ws))
     hub.close()
     assert hub.errors and hub.errors[0].startswith("nope")
+
+
+# --- review round 1 regressions -----------------------------------------------
+
+def test_api_error_keeps_session_valid(ws):
+    agent, client, ui = make(ws, [RuntimeError("529 overloaded"), reply(text("ok"))])
+    agent.pending_system.append("Goal mode is on.")
+    assert agent.turn("first") == "error"
+    assert [m["role"] for m in agent.messages] == ["user", "system", "assistant"]
+    agent.turn("second")
+    roles = [m["role"] for m in client.requests[-1]["messages"]]
+    assert roles == ["user", "system", "assistant", "user"]
+
+
+def test_resume_after_crash_mid_tool_closes_the_tail(ws):
+    s = Session.create(str(ws))
+    agent, _, _ = make(ws, [reply(tool("bash", {"command": "sleep 1"}), stop="tool_use")], session=s)
+    agent.add_user("go")
+    agent.add({"role": "assistant", "content": [tool("bash", {"command": "sleep 9"}, tid="toolu_dead")]})
+    again, client, _ = make(ws, [reply(text("hi"))], session=Session(s.path))
+    again.turn("continue")
+    msgs = client.requests[0]["messages"]
+    assert msgs[2]["content"][0]["tool_use_id"] == "toolu_dead" and msgs[2]["content"][0]["is_error"]
+    assert [m["role"] for m in msgs] == ["user", "assistant", "user", "assistant", "user"]
+
+
+def test_fallback_partial_is_not_run_or_echoed(ws, monkeypatch):
+    declined, kept = tool("bash", {"command": "echo declined"}), tool("bash", {"command": "echo kept"})
+    fb = {"type": "fallback", "from": {"model": "claude-opus-5-5"}, "to": {"model": "claude-opus-5"},
+          "trigger": {"type": "refusal", "category": "cyber"}}
+    first = reply(thinking("x"), text("partial"), declined, fb, text("again"), kept, stop="tool_use",
+                  model="claude-opus-5")
+    agent, client, _ = make(ws, [first, reply(text("done"))])
+    ran = []
+    monkeypatch.setattr(agent.local, "bash", lambda command, **k: ran.append(command) or "ok")
+    agent.turn("go")
+    assert ran == ["echo kept"]
+    echoed = client.requests[1]["messages"][1]["content"]
+    assert [b["type"] for b in echoed] == ["text", "fallback", "text", "tool_use"]
+
+
+def test_goal_rules_restated_on_resume_after_compaction(ws):
+    block = {"type": "compaction", "content": "S", "signature": "c"}
+    agent, client, _ = make(ws, [reply(text("BLOCKED: which?")), reply(block, stop="compaction"),
+                                 reply(tool("goal_done", {"evidence": "e"}), stop="tool_use"), reply(text("done"))])
+    agent.set_goal("ship it")
+    agent.compact()
+    assert agent.run_goal()["status"] == "done"
+    sys_msgs = [m for m in client.requests[-1]["messages"] if m["role"] == "system"]
+    assert sys_msgs and "ship it" in sys_msgs[-1]["content"]
+
+
+def test_cleared_goal_is_not_restored(ws):
+    agent, _, _ = make(ws, [reply(text("BLOCKED: ?"))])
+    agent.set_goal("x")
+    agent.clear_goal()
+    again, _, _ = make(ws, [], session=Session(agent.session.path))
+    assert again.goal is None
+
+
+def test_each_iteration_priced_at_its_own_model(ws):
+    u = usage(inp=0, out=0)
+    u["iterations"] = [
+        {"type": "message", "model": "claude-opus-5-5", "input_tokens": 1_000_000, "output_tokens": 0,
+         "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0},
+        {"type": "fallback_message", "model": "claude-opus-5", "input_tokens": 1_000_000, "output_tokens": 0,
+         "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}]
+    agent, _, _ = make(ws, [reply(text("x"), u=u, model="claude-opus-5")])
+    agent.turn("hi")
+    assert agent.cost == pytest.approx(4 + 5)
+    assert agent.last_context == 1_000_000

@@ -1,8 +1,9 @@
 """The agent loop: call the model, run the tools it asks for, repeat.
 
 Three rules keep this loop valid on current Claude models:
-1. Append the model's content blocks exactly as returned (thinking signatures,
-   compaction blocks). Never append just the text.
+1. Append the model's content blocks as returned (thinking signatures,
+   compaction blocks), never just the text. The one exception is the partial
+   that a declining model left before a server-side fallback (see clean()).
 2. Never edit what was already sent. System prompt and tools are frozen per
    session; later instructions are appended as role:"system" messages.
 3. Every tool_use gets a tool_result in the next user message, even when the
@@ -23,26 +24,12 @@ COMPACT_AT = int(os.environ.get("MINI_COMPACT_AT", 150_000))  # input tokens
 BETAS = ["compact-2026-09-04", "thinking-binding-controls-2026-08-01"]
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-# $ per million tokens: input, output, cache read, 5-minute cache write.
-# Haiku 5.5 cache rates assume the usual 0.1x / 1.25x multipliers.
+# $ per million tokens: input, output, cache read, 5-minute cache write. Fallback targets included.
+# Haiku 5.5 cache rates assume the usual 0.1x / 1.25x multipliers (prompts under 100K tokens).
 PRICES = {"claude-opus-5-5": (4, 20, 0.20, 5), "claude-sonnet-5-5": (2, 10, 0.20, 2.5),
-          "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125)}
+          "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125), "claude-opus-5": (5, 25, 0.50, 6.25),
+          "claude-opus-4-8": (5, 25, 0.50, 6.25), "claude-sonnet-5": (2, 10, 0.20, 2.5)}
 WEB_SEARCH_PRICE = 0.01  # $ per search
-
-# Anthropic's published summarization prompt; used only when /compact gets a focus.
-SUMMARY_PROMPT = (
-    "Summarize the transcript inside <summary></summary> tags. Include relevant information in the summary such that "
-    "this conversation will be continued by a new context window without needing to redo work or be reprovided with "
-    "relevant constraints or context. Be sure to preserve: (1) any difficulties or problems that came up, and how they "
-    "were handled or resolved; (2) any possibilities, options, or approaches that were raised, tried, or set aside, and "
-    "why; (3) anything that was asked for, decided, agreed, ruled out, or established as a preference, constraint, or "
-    "boundary - stated exactly; (4) exactly where things stand now - what has been covered, settled, or completed so "
-    "far; (5) anything still open, unresolved, promised, or expected to happen next; (6) specific details that would be "
-    "hard to reconstruct - names, numbers, dates, exact wording, links or references - kept exactly. Be complete on "
-    "these even at the cost of length; keep everything else concise. Weight the two voices differently: keep what the "
-    "user said, asked for, shared, or established carefully and close to their own words; your own explanations and "
-    "reasoning can be condensed much further, to what they concluded or produced - as long as nothing in the six items "
-    "above is dropped. Do not call any tools while writing this summary; respond with text only.")
 
 GOAL_RULES = (
     "Goal mode is on. Objective: {objective}\n"
@@ -52,8 +39,8 @@ GOAL_RULES = (
 
 EXTRA_SCHEMAS = {
     "task": {
-        "description": "Delegate a self-contained task to a subagent with a fresh context and read-only tools "
-                       "(read, bash, web_search). Returns only its final answer. Give it everything it needs in the prompt.",
+        "description": "Delegate a self-contained research or reading task to a subagent with a fresh context and "
+                       "read, bash and web_search. It returns only its final answer, so give it everything it needs.",
         "input_schema": {"type": "object", "properties": {
             "prompt": {"type": "string"},
             "model": {"type": "string", "enum": ["claude-sonnet-5-5", "claude-haiku-5-5"],
@@ -65,8 +52,17 @@ EXTRA_SCHEMAS = {
 }
 
 
-def dump(block) -> dict:
-    return block.to_dict(exclude_none=True)
+def n(x) -> int:
+    return x or 0
+
+
+def clean(blocks: list[dict]) -> list[dict]:
+    """After a mid-stream fallback, drop the declined model's unpaired calls and thinking before the boundary."""
+    cut = max((i for i, b in enumerate(blocks) if b["type"] == "fallback"), default=-1)
+    answered = {b.get("tool_use_id") for b in blocks}
+    keep = lambda b: b["type"] == "text" or b["type"].endswith("_tool_result") or (
+        b["type"] == "server_tool_use" and b["id"] in answered)
+    return [b for b in blocks[:max(cut, 0)] if keep(b)] + blocks[max(cut, 0):]
 
 
 class Agent:
@@ -75,23 +71,22 @@ class Agent:
         self.cwd, self.session, self.ui, self.approver, self.hub, self.sub = cwd, session, ui, approver, hub, sub
         self.client = client or anthropic.Anthropic()
         self.local = LocalTools(cwd, approver)
-        self.effort, self.cost, self.last_context, self.subs = effort, 0.0, 0, 0
+        self.effort, self.last_context, self.subs = effort, 0, 0
         self.pending_system: list[str] = []
-        self.goal, self.goal_claim = None, None
-        meta, self.messages, goal = session.load()
+        self.goal_claim = None
+        meta, self.messages, self.goal, self.cost = session.load()
         if meta:  # resume: replay the frozen prompt and tools byte for byte
             self.model, self.system, self.tools = meta["model"], meta["system"], meta["tools"]
-            self.goal = goal
-            self.cost = sum(e.get("cost", 0) for e in session.events() if e["kind"] == "usage")
+            self.repair()
         else:
             self.model = model or (SUB_MODEL if sub else MAIN_MODEL)
             names = ["read", "bash"] if sub else ["read", "write", "edit", "bash"]
-            self.tools = [{"name": n, **SCHEMAS[n]} for n in names]
+            self.tools = [{"name": x, **SCHEMAS[x]} for x in names]
             if not sub:
-                self.tools += [{"name": n, **s} for n, s in EXTRA_SCHEMAS.items()]
+                self.tools += [{"name": x, **s} for x, s in EXTRA_SCHEMAS.items()]
                 self.tools += hub.schemas if hub else []
             self.tools.append(WEB_SEARCH)
-            self.system = build_system(cwd, list(skills), hub.errors if hub else [])
+            self.system = build_system(cwd, list(skills), hub.errors if hub else [], sub)
             session.append("meta", model=self.model, cwd=str(cwd), system=self.system, tools=self.tools)
 
     # --- transcript -------------------------------------------------------
@@ -104,6 +99,21 @@ class Agent:
         for text in self.pending_system:  # a system message must follow a user message
             self.add({"role": "system", "content": text})
         self.pending_system = []
+
+    def placeholder(self, why: str):
+        self.add({"role": "assistant", "content": [{"type": "text", "text": f"({why})"}]})
+
+    def repair(self):
+        """A session that died mid-turn gets its tail closed, by appending only."""
+        last = self.messages[-1] if self.messages else None
+        if last and last["role"] == "assistant":
+            uses = [b for b in last["content"] if isinstance(b, dict) and b.get("type") == "tool_use"]
+            if uses:
+                self.add_user([{"type": "tool_result", "tool_use_id": u["id"], "is_error": True,
+                                "content": "Not run: the session ended before this call."} for u in uses])
+                last = self.messages[-1]
+        if last and last["role"] in ("user", "system"):
+            self.placeholder("the previous session ended here")
 
     def final_text(self) -> str:
         for m in reversed(self.messages):
@@ -135,22 +145,24 @@ class Agent:
 
     def track(self, resp):
         u = resp.usage
-        pin, pout, pread, pwrite = PRICES.get(resp.model, PRICES[MAIN_MODEL])
-        parts = u.iterations or [u]
-        cost = sum(((getattr(i, "input_tokens", 0) or 0) * pin + (getattr(i, "output_tokens", 0) or 0) * pout
-                    + (getattr(i, "cache_read_input_tokens", 0) or 0) * pread
-                    + (getattr(i, "cache_creation_input_tokens", 0) or 0) * pwrite) / 1e6 for i in parts)
+        cost = 0.0
+        for i in (u.iterations or [u]):  # each iteration (compaction, declined attempt, fallback) has its own price
+            pin, pout, pread, pwrite = PRICES.get(getattr(i, "model", None) or resp.model, PRICES[MAIN_MODEL])
+            cost += (n(getattr(i, "input_tokens", 0)) * pin + n(getattr(i, "output_tokens", 0)) * pout
+                     + n(getattr(i, "cache_read_input_tokens", 0)) * pread
+                     + n(getattr(i, "cache_creation_input_tokens", 0)) * pwrite) / 1e6
         if u.server_tool_use:
-            cost += (u.server_tool_use.web_search_requests or 0) * WEB_SEARCH_PRICE
+            cost += n(u.server_tool_use.web_search_requests) * WEB_SEARCH_PRICE
         self.cost += cost
-        self.last_context = (u.input_tokens or 0) + (u.cache_read_input_tokens or 0) + \
-            (u.cache_creation_input_tokens or 0) + (u.output_tokens or 0)
+        last = next((i for i in reversed(u.iterations or []) if i.type in ("message", "fallback_message")), u)
+        self.last_context = sum(n(getattr(last, f, 0)) for f in
+                                ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"))
         self.session.append("usage", usage=u.to_dict(exclude_none=True), cost=round(cost, 6))
         drops = [t.to_dict() for t in (resp.input_transformations or [])]
-        if drops:  # any entry here means the transcript was edited somewhere
+        if drops:
             self.session.append("transform", items=drops)
-            self.ui.warn(f"API dropped {len(drops)} thinking block(s): {drops[0].get('reason')}")
-        return u
+            if any(d.get("reason") == "prefix_binding_mismatch" for d in drops):  # model switches are expected
+                self.ui.warn(f"API dropped thinking: history was edited before {drops[0].get('path')}")
 
     # --- one user turn ----------------------------------------------------
     def turn(self, content) -> str:
@@ -161,10 +173,14 @@ class Agent:
             try:
                 resp = self.call()
             except KeyboardInterrupt:
-                self.add({"role": "assistant", "content": [{"type": "text", "text": "(interrupted by the user)"}]})
+                self.placeholder("interrupted by the user")
                 self.ui.warn("interrupted")
                 return "interrupted"
-            blocks = [dump(b) for b in resp.content]
+            except Exception as e:  # the transcript must stay valid whatever failed
+                self.placeholder(f"request failed: {type(e).__name__}")
+                self.ui.warn(f"request failed: {e}")
+                return "error"
+            blocks = clean([b.to_dict(exclude_none=True) for b in resp.content])
             self.add({"role": "assistant", "content": blocks})
             self.track(resp)
             self.ui.end_message(resp.stop_reason, self)
@@ -172,23 +188,22 @@ class Agent:
                 continue
             uses = [b for b in blocks if b["type"] == "tool_use"]
             if uses:
-                complete = resp.stop_reason == "tool_use"
-                results, interrupted = self.run_tools(uses, complete)
+                results, interrupted = self.run_tools(uses, resp.stop_reason)
                 self.add_user(results)
                 if interrupted:
                     return "interrupted"
-                if complete:
+                if resp.stop_reason == "tool_use":
                     continue
             if resp.stop_reason == "refusal":
                 self.ui.warn(f"refused: {getattr(resp.stop_details, 'category', None)}")
             return resp.stop_reason
 
-    def run_tools(self, uses, complete=True):
+    def run_tools(self, uses, stop="tool_use"):
         results, interrupted = [], False
         for u in uses:
             self.ui.tool_call(u["name"], u["input"])
-            if not complete:
-                out, err = "Not run: your message hit max_tokens before this call was complete.", True
+            if stop != "tool_use":
+                out, err = f"Not run: the response ended ({stop}) before this call was complete.", True
             elif interrupted:
                 out, err = "Not run: interrupted by the user.", True
             else:
@@ -234,27 +249,28 @@ class Agent:
         stop = child.turn(prompt)
         self.cost += child.cost
         self.session.append("usage", cost=round(child.cost, 6), subagent=path.name)
-        text = child.final_text()
         if stop == "interrupted":
             raise KeyboardInterrupt
-        return text or f"[subagent stopped ({stop}) without an answer]"
+        return child.final_text() or f"[subagent stopped ({stop}) without an answer]"
 
     # --- compaction -------------------------------------------------------
-    def compact(self, focus: str | None = None) -> bool:
+    def compact(self) -> bool:
         """Swap the whole history for one server-written summary block."""
         if not self.messages:
             return False
-        compaction = {"type": "summarize"}
-        if focus:  # custom instructions replace the default prompt, so include it
-            compaction["instructions"] = SUMMARY_PROMPT + f"\n\nThe user asked you to make sure to keep: {focus}"
-        resp = self.client.beta.messages.create(
-            model=self.model, max_tokens=16000, system=[{"type": "text", "text": self.system}], tools=self.tools,
-            messages=self.messages, compaction=compaction, betas=list(BETAS))
+        try:
+            resp = self.client.beta.messages.create(
+                model=self.model, max_tokens=16000, system=[{"type": "text", "text": self.system}], tools=self.tools,
+                messages=self.messages, compaction={"type": "summarize"}, cache_control={"type": "ephemeral"},
+                betas=list(BETAS))
+        except Exception as e:
+            self.ui.warn(f"compaction failed: {e}")
+            return False
         self.track(resp)
         if resp.stop_reason != "compaction":
             self.ui.warn(f"no summary came back ({resp.stop_reason}); keeping the full history")
             return False
-        msg = {"role": "assistant", "content": [dump(b) for b in resp.content]}
+        msg = {"role": "assistant", "content": [b.to_dict(exclude_none=True) for b in resp.content]}
         self.messages = [msg]
         self.session.append("compact", message=msg)
         self.last_context = 0
@@ -277,40 +293,44 @@ class Agent:
         self.session.append("goal", goal=self.goal)
 
     def set_goal(self, objective, verify=None, max_turns=25, budget=None):
-        self.goal = {"objective": objective, "status": "active", "turns": 0, "max_turns": max_turns,
+        self.goal = {"objective": objective, "status": "paused", "turns": 0, "max_turns": max_turns,
                      "verify": verify, "budget": budget, "spent": 0.0, "note": ""}
-        self.save_goal()
-        self.pending_system.append(self.goal_rules())
         return self.run_goal(f"Work toward this goal until it is done:\n{objective}")
+
+    def clear_goal(self):
+        if self.goal:
+            self.goal["status"] = "cleared"
+            self.save_goal()
+            self.pending_system.append("Goal mode is off. The user cleared the goal.")
+            self.goal = None
 
     def run_goal(self, first="Resume work toward the goal."):
         g = self.goal
-        g["status"] = "active"
-        start_cost = self.cost - g["spent"]
+        g["status"], g["note"] = "active", ""
+        self.save_goal()
+        self.pending_system.append(self.goal_rules())  # restated on every start, so a resume after compaction has it
+        start_cost, limit = self.cost - g["spent"], g["turns"] + g["max_turns"]
         message = first
         while True:
             self.maybe_compact()
             stop = self.turn(message)
             g["turns"] += 1
             g["spent"] = self.cost - start_cost
-            if stop == "interrupted":
-                g["status"], g["note"] = "paused", "interrupted"
+            if stop in ("interrupted", "error", "refusal"):
+                g["status"], g["note"] = "paused", stop
                 break
             if self.goal_claim is not None:
                 ok, out = self.verify()
                 if ok:
                     g["status"], g["note"] = "done", self.goal_claim[:500]
                     break
-                message = f"The harness ran `{g['verify']}` and it failed:\n{truncate(out)[:4000]}\nKeep working."
+                message = f"The harness ran `{g['verify']}` and it failed:\n{out[-4000:]}\nKeep working."
             elif "BLOCKED:" in self.final_text():
                 g["status"], g["note"] = "paused", "blocked: waiting for the user"
                 break
-            elif stop == "refusal":
-                g["status"], g["note"] = "paused", "refused"
-                break
             else:
                 message = "Continue toward the goal. Call goal_done with evidence when it is fully met."
-            if g["turns"] >= g["max_turns"]:
+            if g["turns"] >= limit:
                 g["status"], g["note"] = "paused", f"turn limit ({g['max_turns']})"
                 break
             if g.get("budget") and g["spent"] >= g["budget"]:
@@ -324,5 +344,8 @@ class Agent:
         if not cmd:
             return True, ""
         self.ui.note(f"verifying: {cmd}")
-        r = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=600)
+        try:
+            r = subprocess.run(cmd, shell=True, cwd=self.cwd, capture_output=True, text=True, timeout=600)
+        except subprocess.TimeoutExpired:
+            return False, "The verify command timed out after 600s."
         return r.returncode == 0, (r.stdout + r.stderr)

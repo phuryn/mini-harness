@@ -14,8 +14,8 @@ DIM, YEL, CYA, RED, OFF = "\033[2m", "\033[33m", "\033[36m", "\033[31m", "\033[0
 HELP = """/new                 start a fresh session
 /sessions            list recent sessions
 /resume [id]         resume the latest session, or one by id prefix
-/compact [focus]     summarize the history now (optional: what to keep)
-/goal <objective>    work until done · /goal pause|resume|clear|status
+/compact             replace the history with a summary now
+/goal <objective>    work until done · /goal resume|clear|status
 /exit                quit (sessions save after every message)"""
 
 
@@ -67,10 +67,6 @@ def status_line(agent):
     return f"{DIM}[{agent.session.id} · {agent.last_context:,} tokens in context · ${agent.cost:.3f} total]{OFF}"
 
 
-def build(args, session, ui, approver, hub, skills):
-    return Agent(os.getcwd(), session, ui, approver, hub=hub, skills=skills, model=args.model, effort=args.effort)
-
-
 def print_goal(g):
     if not g:
         print("No goal.")
@@ -109,7 +105,8 @@ def main():
         session = Session.find(cwd, args.resume)
         if not session:
             sys.exit("No session found.")
-    agent = build(args, session or Session.create(cwd), ui, approver, hub, skills)
+    new = lambda s: Agent(cwd, s, ui, approver, hub=hub, skills=skills, model=args.model, effort=args.effort)
+    agent = new(session or Session.create(cwd))
 
     try:
         if headless:
@@ -124,79 +121,77 @@ def main():
             else:
                 print(status_line(agent))
             return
-        repl(agent, args, ui, approver, hub, skills)
+        repl(agent, new)
     finally:
         hub.close()
 
 
-def repl(agent, args, ui, approver, hub, skills):
+def repl(agent, new):
     try:
         import readline  # noqa: F401  (line editing and history)
     except ImportError:
         pass
     print(f"{DIM}mini · {agent.model} · session {agent.session.id} · /help for commands{OFF}")
-    if agent.messages:
-        print(f"{DIM}resumed {len(agent.messages)} messages{OFF}")
     while True:
         try:
             line = input(f"\n{CYA}›{OFF} ").strip()
         except (EOFError, KeyboardInterrupt):
             print()
             return
-        if not line:
-            continue
-        cmd, _, rest = line.partition(" ")
-        rest = rest.strip()
-        if cmd == "/exit":
+        if line == "/exit":
             return
-        elif cmd == "/help":
-            print(HELP)
-        elif cmd == "/new":
-            agent = build(args, Session.create(os.getcwd()), ui, approver, hub, skills)
-            print(f"{DIM}new session {agent.session.id}{OFF}")
-        elif cmd == "/sessions":
-            for sid, turns, cost, first in list_sessions(os.getcwd()):
-                print(f"  {sid}  {turns:>3} prompts  ${cost:>7.3f}  {first}")
-        elif cmd == "/resume":
-            s = Session.find(os.getcwd(), rest or None)
-            if not s:
-                print("No session found.")
-                continue
-            agent = build(args, s, ui, approver, hub, skills)
-            print(f"{DIM}resumed {agent.session.id} ({len(agent.messages)} messages){OFF}")
-            print_goal(agent.goal) if agent.goal else None
-        elif cmd == "/compact":
-            if agent.compact(rest or None):
-                print(f"{DIM}compacted{OFF}")
-        elif cmd == "/goal":
-            if rest in ("", "status"):
-                print_goal(agent.goal)
-            elif rest == "pause":
-                if agent.goal:
-                    agent.goal["status"] = "paused"
-                    agent.save_goal()
-                print_goal(agent.goal)
-            elif rest == "clear":
-                if agent.goal:
-                    agent.goal["status"] = "cleared"
-                    agent.save_goal()
-                    agent.pending_system.append("Goal mode is off. The previous goal was cleared by the user.")
-                    agent.goal = None
-                print("Goal cleared.")
-            elif rest == "resume":
-                if not agent.goal or agent.goal["status"] == "done":
-                    print("No goal to resume.")
-                    continue
-                agent.goal["max_turns"] += agent.goal["turns"] if agent.goal["turns"] >= agent.goal["max_turns"] else 0
+        try:
+            agent = command(agent, line, new) if line else agent
+        except KeyboardInterrupt:
+            print(f"{YEL}! interrupted{OFF}")
+        except Exception as e:  # keep the REPL alive; the session file is still valid
+            print(f"{RED}! {type(e).__name__}: {e}{OFF}")
+        print(status_line(agent))
+
+
+def command(agent, line, new):
+    cmd, _, rest = line.partition(" ")
+    rest = rest.strip()
+    cwd = os.getcwd()
+    if cmd == "/help":
+        print(HELP)
+    elif cmd == "/new":
+        agent = new(Session.create(cwd))
+        print(f"{DIM}new session {agent.session.id}{OFF}")
+    elif cmd == "/sessions":
+        for sid, turns, cost, first in list_sessions(cwd):
+            print(f"  {sid}  {turns:>3} prompts  ${cost:>7.3f}  {first}")
+    elif cmd == "/resume":
+        s = Session.find(cwd, rest or None)
+        if not s:
+            print("No session found.")
+            return agent
+        agent = new(s)
+        print(f"{DIM}resumed {agent.session.id} ({len(agent.messages)} messages){OFF}")
+        if agent.goal:
+            print_goal(agent.goal)
+    elif cmd == "/compact":
+        if agent.compact():
+            print(f"{DIM}compacted{OFF}")
+    elif cmd == "/goal":
+        if rest in ("", "status"):
+            print_goal(agent.goal)
+        elif rest == "clear":
+            agent.clear_goal()
+            print("Goal cleared.")
+        elif rest == "resume":
+            if agent.goal and agent.goal["status"] in ("paused", "active"):
                 print_goal(agent.run_goal())
             else:
-                print_goal(agent.set_goal(rest))
-        elif cmd.startswith("/"):
-            print(f"Unknown command {cmd}. /help lists them.")
+                print("No paused goal.")
         else:
-            agent.maybe_compact()
-            agent.turn(line)
-        print(status_line(agent))
+            print_goal(agent.set_goal(rest))
+    elif cmd.startswith("/"):
+        print(f"Unknown command {cmd}. /help lists them.")
+    else:
+        agent.maybe_compact()
+        agent.turn(line)
+    return agent
 
 
 if __name__ == "__main__":
