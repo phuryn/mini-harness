@@ -24,8 +24,7 @@ def project_dir(cwd: str) -> Path:
 
 class Session:
     def __init__(self, path: Path):
-        self.path = path
-        self.id = path.stem
+        self.path, self.id = path, path.stem
 
     @classmethod
     def create(cls, cwd: str, name: str | None = None) -> "Session":

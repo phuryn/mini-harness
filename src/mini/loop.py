@@ -111,8 +111,7 @@ class Agent:
     def __init__(self, cwd, session: Session, ui, approver, hub=None, skills=(), model=None, effort="high", sub=False,
                  client=None):
         self.cwd, self.session, self.ui, self.approver, self.hub = cwd, session, ui, approver, hub
-        self.local = LocalTools(cwd, approver)
-        self.effort, self.compact_failed_at = effort, 0
+        self.local, self.effort, self.compact_failed_at = LocalTools(cwd, approver), effort, 0
         self.pending_system, self.goal_claim = [], None
         meta, self.messages, self.goal, self.cost, self.last_context = session.load()
         if meta:  # resume: replay the frozen prompt and tools byte for byte
@@ -249,7 +248,7 @@ class Agent:
                 asked, answers = [f"(answered a question from the agent) {e['a'][:1000]}"] + asked, answers + 1
         asked += [f"(goal) {self.goal['objective'][:2000]}"] if self.goal and self.goal["status"] == "active" else []
         state = (f"Working directory: {self.cwd}\n\nThe user's recent messages, oldest first:\n"
-                 + "\n---\n".join(asked or ["(none)"]) + f"\n\nAction ({kind}):\n{detail}")
+                 + "\n---\n".join(asked or ["(none)"]) + f"\n\nThe action ({kind}), as one quoted string:\n{json.dumps(detail)}")
         req = urllib.request.Request(JUDGE_URL, json.dumps({"model": JUDGE_MODEL, "state": state, "questions": {
             "verdict": JUDGE}}).encode(), {"Content-Type": "application/json",
                                           "Authorization": f"Bearer {os.environ.get('OPENROUTER_API_KEY', '')}"})
@@ -349,7 +348,7 @@ class Agent:
             if not self.approver.interactive:
                 return "Nobody can answer: this is a headless run. Assume what's most reasonable, say so, go on."
             self.ui.end_message()
-            answer = input(f"\033[33m  ? {printable(args['question'])}\n  > \033[0m").strip() or "(no answer)"
+            answer = input(f"\033[33m  ? {printable(args['question'], lines=True)}\n  > \033[0m").strip() or "(no answer)"
             self.session.append("answer", q=args["question"], a=answer)  # the judge counts it as the user's words
             return answer
         if name == "goal_done":

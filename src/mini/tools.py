@@ -5,6 +5,7 @@ A tool is a JSON schema the model sees and a Python function the harness runs.
 """
 import contextlib
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -18,8 +19,12 @@ class ToolError(Exception):
 
 
 def printable(text: str, lines: bool = False) -> str:
-    """No hidden \r, escapes or blank-line padding; real line breaks only where asked (file content)."""
-    return "".join(c if c.isprintable() or lines and c == "\n" else repr(c)[1:-1] for c in text)
+    """Nothing can hide in a prompt: padding is counted, everything outside plain ASCII is escaped, and real line
+    breaks are kept only where asked (file content)."""
+    text = re.sub(" {16,}" if lines else " {3,}", lambda m: f"[{len(m[0])} spaces]", text)  # code keeps its indent
+    text = re.sub(r"(\n[ \t]*){3,}", lambda m: f"\n[{m[0].count(chr(10)) - 1} blank lines]\n", text) if lines else text
+    return "".join(c if c.isascii() and c.isprintable() or lines and c == "\n"
+                   else c.encode("unicode_escape").decode() for c in text)
 
 
 def run_shell(command: str, cwd, timeout: int):
@@ -38,9 +43,8 @@ def run_shell(command: str, cwd, timeout: int):
 
 
 def truncate(text: str) -> str:
-    half = MAX_OUT // 2
-    cut = f"{text[:half]}\n\n[... {len(text) - MAX_OUT} characters cut ...]\n\n{text[-half:]}"
-    return text if len(text) <= MAX_OUT else cut
+    h = MAX_OUT // 2
+    return text if len(text) <= MAX_OUT else f"{text[:h]}\n\n[... {len(text) - MAX_OUT} characters cut ...]\n\n{text[-h:]}"
 
 
 class Approver:
@@ -83,7 +87,7 @@ class Approver:
         shown = printable(detail, kind == "write")
         always = kind != "write"  # protected writes are asked one by one; the path is repeated next to the answer
         hint = f"y/n/a=all {kind} calls until you quit" if always else \
-            f"{printable(detail.splitlines()[0])}, {detail.count(chr(10))} lines · y/n"
+            f"{printable(detail.splitlines()[0])}, {len(detail.split(chr(10), 1)[1].splitlines())} lines shown · y/n"
         ans = input(f"\033[33m  allow {kind}: {shown}  [{hint}] \033[0m").strip().lower()
         if ans == "a" and always:
             self.always.add(kind)
@@ -161,7 +165,8 @@ class LocalTools:
             raise ToolError("Read the file before editing it.")
         if p.stat().st_mtime != self.seen[p]:
             raise ToolError("File changed since you last read it. Read it again.")
-        if self._ask(p) and not self.approver.ok("write", f"{p}\n- {old}\n+ {new}"):
+        if self._ask(p) and not self.approver.ok("write", "\n".join(
+                [str(p)] + ["- " + x for x in old.split("\n")] + ["+ " + x for x in new.split("\n")])):
             raise ToolError("User denied this edit (outside the project, or a file that runs later)." + self.approver.reason)
         if not old:
             raise ToolError("`old` must not be empty.")

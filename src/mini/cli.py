@@ -9,7 +9,7 @@ import anthropic
 from .ext import MCPHub, find_skills
 from .loop import OTHER, Agent
 from .session import Session, list_sessions
-from .tools import Approver
+from .tools import Approver, printable
 
 DIM, YEL, CYA, RED, OFF = "\033[2m", "\033[33m", "\033[36m", "\033[31m", "\033[0m"
 
@@ -17,9 +17,8 @@ HELP = """/new [model]         start a fresh session, on another model if given 
 /effort [level]      show or change the effort for the next requests
 /permissions [mode]  ask, judge or yes: who approves risky calls
 /sessions · /resume [id]  list sessions here · resume the latest, or one by id prefix
-/compact             replace the history with a summary now
 /goal <objective>    work until done · /goal resume|clear|status
-/exit                quit (sessions save after every message)"""
+/compact · /exit     summarize the history now · quit (every message is already saved)"""
 
 
 class UI:
@@ -50,10 +49,10 @@ class UI:
 
     def tool_call(self, name, args):
         brief = args.get("command") or args.get("path") or args.get("prompt") or json.dumps(args)[:120]
-        self._say(f"{CYA}→ {name}{OFF} {str(brief).splitlines()[0][:150] if brief else ''}")
+        self._say(f"{CYA}→ {name}{OFF} {printable(str(brief).splitlines()[0][:150]) if brief else ''}")
 
     def tool_result(self, out, err):
-        self._say(f"  {RED if err else DIM}{(out.strip().splitlines() or [''])[0][:150]}{OFF}")
+        self._say(f"  {RED if err else DIM}{printable((out.strip().splitlines() or [''])[0][:150])}{OFF}")
 
     def note(self, s):
         self._say(f"{DIM}· {s}{OFF}")
@@ -193,8 +192,7 @@ def command(agent, line, new):
     elif cmd == "/permissions":
         if rest in ("ask", "judge", "yes"):
             agent.approver.auto, agent.approver.use_judge = rest == "yes", rest == "judge"
-        a = agent.approver
-        print(f"permissions {'yes' if a.auto else 'judge' if a.use_judge else 'ask'} · ask, judge or yes")
+        print(f"permissions {'yes' if agent.approver.auto else 'judge' if agent.approver.use_judge else 'ask'} · ask, judge or yes")
     elif cmd == "/effort":
         if rest and rest not in agent.efforts:
             print(f"{agent.model} has no effort {rest}")
