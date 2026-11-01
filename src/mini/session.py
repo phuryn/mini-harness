@@ -82,11 +82,9 @@ def list_sessions(cwd: str, limit: int = 15):
     for p in sessions(cwd)[:limit]:
         first, turns, cost = "", 0, 0.0
         for e in Session(p).events():
-            if e["kind"] == "msg" and e["message"]["role"] == "user":
-                c = e["message"]["content"]
-                if isinstance(c, str):
-                    turns += 1
-                    first = first or c
+            c = e.get("message", {}).get("content")
+            if e["kind"] == "msg" and e["message"]["role"] == "user" and isinstance(c, str) and not e.get("by"):
+                turns, first = turns + 1, first or c
             elif e["kind"] == "usage":
                 cost += e.get("cost", 0)
         rows.append((p.stem, turns, cost, first.replace("\n", " ")[:60]))

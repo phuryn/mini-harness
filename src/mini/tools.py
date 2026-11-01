@@ -5,6 +5,7 @@ A tool is a JSON schema the model sees and a Python function the harness runs.
 """
 import contextlib
 import os
+import re
 import shlex
 import signal
 import subprocess
@@ -17,9 +18,8 @@ class ToolError(Exception):
     pass
 
 
-def preview(text: str, keep: int = 1500) -> str:
-    """What an approval prompt shows of file content: all of it, or both ends with the gap marked."""
-    return text if len(text) <= 2 * keep else f"{text[:keep]}\n[... {len(text) - 2 * keep} characters not shown ...]\n{text[-keep:]}"
+def printable(text: str) -> str:
+    return "".join(c if c.isprintable() or c == "\n" else repr(c)[1:-1] for c in text)  # no hidden \r or escapes
 
 
 def run_shell(command: str, cwd, timeout: int):
@@ -38,10 +38,9 @@ def run_shell(command: str, cwd, timeout: int):
 
 
 def truncate(text: str) -> str:
-    if len(text) <= MAX_OUT:
-        return text
     half = MAX_OUT // 2
-    return f"{text[:half]}\n\n[... {len(text) - MAX_OUT} characters cut ...]\n\n{text[-half:]}"
+    cut = f"{text[:half]}\n\n[... {len(text) - MAX_OUT} characters cut ...]\n\n{text[-half:]}"
+    return text if len(text) <= MAX_OUT else cut
 
 
 class Approver:
@@ -74,14 +73,16 @@ class Approver:
         if len(detail) > 4000:  # too long to review, by you or the judge, which must see the whole action
             self.reason = " Too long to review: split it into smaller steps."
             return False
-        if self.use_judge and self.judge and kind != "write":  # gated writes run later; the user decides
+        words = re.split(r"[\s/'\";|&<>=()`]+", detail.casefold())  # files that run later: the user decides
+        if self.use_judge and self.judge and kind != "write" and not any(
+                w.startswith(".") and w.strip(".") or w in LocalTools.PROTECTED for w in words):
             verdict, why = self.judge(kind, detail)
             self.reason = f" Judge: {why}"
             if verdict != "ask":
                 return verdict == "allow"
         if not self.interactive:
             return False
-        shown = "".join(c if c.isprintable() else repr(c)[1:-1] for c in detail)  # no hidden \r or escapes
+        shown = printable(detail)
         always = kind != "write"  # protected writes are asked one by one
         hint = f"y/n/a=all {kind} calls until you quit" if always else "y/n"
         ans = input(f"\033[33m  allow {kind}: {shown}  [{hint}] \033[0m").strip().lower()
@@ -144,7 +145,7 @@ class LocalTools:
         p = self._path(path)
         if p.exists() and p.stat().st_mtime != self.seen.get(p):
             raise ToolError("File exists and you haven't read its current version. Read it first, or use edit.")
-        if self._ask(p) and not self.approver.ok("write", f"{p}\n{preview(content)}"):
+        if self._ask(p) and not self.approver.ok("write", f"{p}\n{content}"):
             raise ToolError("User denied this write (outside the project, or a file that runs later)." + self.approver.reason)
         p.parent.mkdir(parents=True, exist_ok=True)
         if p.exists():
@@ -161,7 +162,7 @@ class LocalTools:
             raise ToolError("Read the file before editing it.")
         if p.stat().st_mtime != self.seen[p]:
             raise ToolError("File changed since you last read it. Read it again.")
-        if self._ask(p) and not self.approver.ok("write", f"{p}\n- {preview(old)}\n+ {preview(new)}"):
+        if self._ask(p) and not self.approver.ok("write", f"{p}\n- {old}\n+ {new}"):
             raise ToolError("User denied this edit (outside the project, or a file that runs later)." + self.approver.reason)
         if not old:
             raise ToolError("`old` must not be empty.")

@@ -16,8 +16,7 @@ DIM, YEL, CYA, RED, OFF = "\033[2m", "\033[33m", "\033[36m", "\033[31m", "\033[0
 HELP = """/new [model]         start a fresh session, on another model if given (see mini --models)
 /effort [level]      show or change the effort for the next requests
 /permissions [mode]  ask, judge or yes: who approves risky calls
-/sessions            list recent sessions
-/resume [id]         resume the latest session, or one by id prefix
+/sessions · /resume [id]  list sessions here · resume the latest, or one by id prefix
 /compact             replace the history with a summary now
 /goal <objective>    work until done · /goal resume|clear|status
 /exit                quit (sessions save after every message)"""
@@ -197,10 +196,9 @@ def command(agent, line, new):
         a = agent.approver
         print(f"permissions {'yes' if a.auto else 'judge' if a.use_judge else 'ask'} · ask, judge or yes")
     elif cmd == "/effort":
-        if rest in agent.efforts:
-            agent.effort = rest
-        elif rest:
+        if rest and rest not in agent.efforts:
             print(f"{agent.model} has no effort {rest}")
+        agent.effort = rest if rest in agent.efforts else agent.effort
         print(f"effort {agent.effort} · {agent.model} takes {', '.join(agent.efforts)}")
     elif cmd == "/compact":
         agent.compact()

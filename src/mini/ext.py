@@ -49,8 +49,7 @@ class MCPHub:
             return
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
-        self.stop = asyncio.Event()
-        self.tasks = []
+        self.stop, self.tasks = asyncio.Event(), []
         for name, spec in servers.items():
             ready = concurrent.futures.Future()
             task = asyncio.run_coroutine_threadsafe(self._serve(name, spec, ready), self.loop)
