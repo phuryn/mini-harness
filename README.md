@@ -45,13 +45,13 @@ Ctrl-C stops the current turn and keeps the session valid.
 | File | Lines | Job |
 |---|---|---|
 | `loop.py` | 346 | Model calls, tool dispatch, subagents, compaction, `/goal`, cost |
-| `cli.py` | 179 | REPL, slash commands, headless mode |
+| `cli.py` | 180 | REPL, slash commands, headless mode |
 | `tools.py` | 179 | read, write, edit, bash, approval gate |
 | `ext.py` | 90 | Skills discovery, MCP stdio hub |
 | `session.py` | 73 | JSONL session files |
 | `context.py` | 28 | The frozen system prompt |
 
-That's 897 lines of code (not counting blank lines, comments or docstrings), and about 120 of them are prompts, tool descriptions and schemas.
+That's 898 lines of code (not counting blank lines, comments or docstrings), and about 120 of them are prompts, tool descriptions and schemas.
 
 ## How it works
 
