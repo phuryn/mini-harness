@@ -45,8 +45,8 @@ EXTRA_SCHEMAS = {
     "task": {
         "description": "Delegate a self-contained research or reading task to a subagent. It starts with an empty "
                        "context: it can't see this conversation, so the prompt must include every path, fact and "
-                       "constraint it needs. It has read, bash and web_search, doesn't change files, and returns "
-                       "only its final answer.",
+                       "constraint it needs. It has read, bash and web_search, is told not to change files (its "
+                       "bash calls need approval like yours), and returns only its final answer.",
         **schema({"prompt": {"type": "string"},
                   "model": {"type": "string", "enum": ["claude-sonnet-5-5", "claude-haiku-5-5"],
                             "description": "Default claude-sonnet-5-5; claude-haiku-5-5 for plain reading or search"}},
@@ -69,7 +69,7 @@ def clean(blocks: list[dict]) -> list[dict]:
     answered = {b.get("tool_use_id") for b in blocks}
     keep = lambda b: b["type"] == "text" or b["type"].endswith("_tool_result") or (
         b["type"] == "server_tool_use" and b["id"] in answered)
-    # The fallback marker itself is optional to echo; dropping it keeps later requests free of its beta.
+    # The fallback marker is optional to echo (the guide says keep or drop); dropping it keeps the history plain.
     return [b for b in blocks[:max(cut, 0)] if keep(b)] + blocks[cut + 1:]
 
 

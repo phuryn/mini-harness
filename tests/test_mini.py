@@ -730,3 +730,37 @@ def test_read_refuses_huge_and_special_files(ws):
     tools = LocalTools(str(ws), Approver(auto=True))
     with pytest.raises(ToolError, match="regular file"):
         tools.read("/dev/zero")
+
+
+# --- review round 7 -----------------------------------------------------------
+
+def test_read_pages_before_the_output_cap(ws):
+    (ws / "big.py").write_text("\n".join(f"x_{i} = '{'a' * 70}'" for i in range(600)) + "\n")
+    tools = LocalTools(str(ws), Approver(auto=True))
+    first = tools.read("big.py")
+    assert len(first) < 30_000 and "[... " not in first
+    nxt = int(first.rsplit("offset=", 1)[1].rstrip("]"))
+    second = tools.read("big.py", offset=nxt)
+    assert second.splitlines()[0].strip().startswith(f"{nxt}\t")
+    assert tools.read("big.py", limit=-5).count("\n") >= 1
+
+
+def test_crlf_edge_cases(ws):
+    tools = LocalTools(str(ws), Approver(auto=True))
+    f = ws / "m.txt"
+    f.write_bytes(b"header\r\nb\nc\n")
+    tools.read("m.txt")
+    tools.edit("m.txt", "b\nc", "B\nC")
+    assert f.read_bytes() == b"header\r\nB\nC\n"
+    g = ws / "w.txt"
+    g.write_bytes(b"a\r\nb\r\n")
+    tools.read("w.txt")
+    tools.edit("w.txt", "a\nb", "x\r\ny")
+    assert g.read_bytes() == b"x\r\ny\r\n"
+    tools.read("w.txt")
+    tools.write("w.txt", "one\ntwo\n")
+    assert g.read_bytes() == b"one\r\ntwo\r\n"
+
+
+def test_negative_timeout_is_clamped(ws):
+    assert LocalTools(str(ws), Approver(auto=True)).bash("echo ok", timeout=-1) == "ok"

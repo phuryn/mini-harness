@@ -123,11 +123,16 @@ class LocalTools:
             raise ToolError("File is over 5 MB. Use bash (head, tail, grep) to look at parts of it.")
         lines = p.read_text(errors="replace").splitlines()
         self.seen[p] = p.stat().st_mtime
-        start = max(offset, 1)
-        chunk = lines[start - 1:start - 1 + limit]
-        body = "\n".join(f"{i:>5}\t{line}" for i, line in enumerate(chunk, start))
-        more = len(lines) - (start - 1 + len(chunk))
-        return body + (f"\n[{more} more lines; use offset]" if more > 0 else "")
+        start, shown, size = max(offset, 1), [], 0
+        for i, line in enumerate(lines[start - 1:start - 1 + max(limit, 1)], start):
+            numbered = f"{i:>5}\t{line}"
+            if shown and size + len(numbered) > MAX_OUT - 200:  # page here, never let the output cap cut the middle
+                break
+            shown.append(numbered)
+            size += len(numbered) + 1
+        end = start + len(shown) - 1
+        more = f"\n[lines {start}-{end} of {len(lines)}; continue with offset={end + 1}]" if end < len(lines) else ""
+        return "\n".join(shown) + more
 
     def write(self, path: str, content: str) -> str:
         p = self._path(path)
@@ -136,7 +141,11 @@ class LocalTools:
         if self._ask(p) and not self.approver.ok("write", f"{p}\n{preview(content)}"):
             raise ToolError("User denied this write (outside the project, or a file that runs later).")
         p.parent.mkdir(parents=True, exist_ok=True)
-        p.write_text(content)
+        if p.exists():
+            with p.open(newline="") as f:
+                if "\r\n" in f.read():  # keep a Windows file's line endings
+                    content = content.replace("\r\n", "\n").replace("\n", "\r\n")
+        p.write_text(content, newline="")
         self.seen[p] = p.stat().st_mtime
         return f"Wrote {len(content.splitlines())} lines to {p}"
 
@@ -152,8 +161,9 @@ class LocalTools:
             raise ToolError("`old` must not be empty.")
         with p.open(newline="") as f:  # keep the file's own line endings
             text = f.read()
-        if "\r\n" in text and "\r\n" not in old:
-            old, new = old.replace("\n", "\r\n"), new.replace("\n", "\r\n")
+        if old not in text and "\r\n" in text:  # the model writes \n; the file uses \r\n
+            old = old.replace("\r\n", "\n").replace("\n", "\r\n")
+            new = new.replace("\r\n", "\n").replace("\n", "\r\n")
         n = text.count(old)
         if n == 0:
             raise ToolError("`old` not found. It must match the file exactly, including whitespace.")
@@ -167,7 +177,7 @@ class LocalTools:
         if not self.approver.ok("bash", command):
             raise ToolError("User denied this command.")
         try:
-            code, stdout, stderr = run_shell(command, self.cwd, timeout)
+            code, stdout, stderr = run_shell(command, self.cwd, max(timeout, 1))
         except subprocess.TimeoutExpired:
             raise ToolError(f"Timed out after {timeout}s.")
         out = (stdout + (("\n[stderr]\n" + stderr) if stderr else "")).strip()
@@ -184,7 +194,7 @@ SCHEMAS = {
     "read": {
         "description": "Read a text file, or list a directory. Paths are relative to the working directory. Output "
                        "lines start with a line number and a tab; that prefix is not part of the file. Long files "
-                       "come in pages: pass offset to continue.",
+                       "come in pages of about 30,000 characters; the last line says which offset to pass next.",
         **schema({"path": {"type": "string"},
                   "offset": {"type": "integer", "description": "First line to show, 1-based (default 1)"},
                   "limit": {"type": "integer", "description": "Lines to show (default 2000)"}}, ["path"])},
