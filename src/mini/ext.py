@@ -43,8 +43,10 @@ class MCPHub:
             return
         try:
             servers = json.loads(cfg.read_text()).get("mcpServers", {})
-        except (json.JSONDecodeError, AttributeError) as e:
-            self.errors.append(f"{cfg}: not valid JSON ({e})")
+            if not isinstance(servers, dict):
+                raise ValueError('"mcpServers" must be an object')
+        except (json.JSONDecodeError, AttributeError, ValueError) as e:
+            self.errors.append(f"{cfg}: not a valid MCP config ({e})")
             return
         self.loop = asyncio.new_event_loop()
         threading.Thread(target=self.loop.run_forever, daemon=True).start()

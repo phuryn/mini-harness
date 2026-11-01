@@ -16,15 +16,24 @@ class ToolError(Exception):
     pass
 
 
+def preview(text: str, keep: int = 1500) -> str:
+    """What an approval prompt shows of file content: all of it, or both ends with the gap marked."""
+    return text if len(text) <= 2 * keep else f"{text[:keep]}\n[... {len(text) - 2 * keep} characters not shown ...]\n{text[-keep:]}"
+
+
 def run_shell(command: str, cwd, timeout: int):
     """Run a shell command with no stdin; on timeout or Ctrl-C kill its whole process group."""
     proc = subprocess.Popen(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, env={**os.environ, "PAGER": "cat"},
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
+                            env={**os.environ, "PAGER": "cat"},
                             start_new_session=True)
     try:
         out, err = proc.communicate(timeout=timeout)
     except BaseException:
-        os.killpg(proc.pid, signal.SIGKILL)
+        try:
+            os.killpg(proc.pid, signal.SIGKILL)
+        except ProcessLookupError:  # already gone
+            pass
         proc.wait()
         raise
     return proc.returncode, out, err
@@ -41,7 +50,7 @@ class Approver:
     """Asks before risky calls. `auto=True` approves everything (headless --yes)."""
 
     # Commands that can't run other programs or write files, whatever their flags.
-    SAFE = {"ls", "cat", "head", "tail", "wc", "pwd", "grep", "echo", "which", "file", "stat", "diff"}
+    SAFE = {"ls", "cat", "head", "tail", "wc", "pwd", "grep", "echo", "which", "stat", "diff"}
     SHELL = set(";&|<>`$(){}\n\r\\")
 
     def __init__(self, auto: bool = False, interactive: bool = True, allow: tuple = ()):
@@ -116,8 +125,8 @@ class LocalTools:
         p = self._path(path)
         if p.exists() and p.stat().st_mtime != self.seen.get(p):
             raise ToolError("File exists and you haven't read its current version. Read it first, or use edit.")
-        if not self._inside(p) and not self.approver.ok("write", str(p)):
-            raise ToolError("User denied writing outside the working directory.")
+        if not self._inside(p) and not self.approver.ok("write", f"{p}\n{preview(content)}"):
+            raise ToolError("User denied this write (outside the project, or a file that runs later).")
         p.parent.mkdir(parents=True, exist_ok=True)
         p.write_text(content)
         self.seen[p] = p.stat().st_mtime
@@ -129,8 +138,8 @@ class LocalTools:
             raise ToolError("Read the file before editing it.")
         if p.stat().st_mtime != self.seen[p]:
             raise ToolError("File changed since you last read it. Read it again.")
-        if not self._inside(p) and not self.approver.ok("write", str(p)):
-            raise ToolError("User denied editing outside the working directory.")
+        if not self._inside(p) and not self.approver.ok("write", f"{p}\n- {preview(old)}\n+ {preview(new)}"):
+            raise ToolError("User denied this edit (outside the project, or a file that runs later).")
         if not old:
             raise ToolError("`old` must not be empty.")
         text = p.read_text()

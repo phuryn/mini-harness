@@ -101,8 +101,8 @@ class Agent:
 
     # --- transcript -------------------------------------------------------
     def add(self, message: dict):
+        self.session.append("msg", message=message)  # file first: memory may run ahead of disk, never behind
         self.messages.append(message)
-        self.session.append("msg", message=message)
 
     def add_user(self, content):
         self.add({"role": "user", "content": content})
@@ -132,9 +132,9 @@ class Agent:
         return ""
 
     # --- model calls ------------------------------------------------------
-    def request_args(self) -> dict:
+    def request_args(self, paused=()) -> dict:
         kw = dict(model=self.model, max_tokens=64000, system=[{"type": "text", "text": self.system}],
-                  tools=self.tools, messages=self.messages, cache_control={"type": "ephemeral"},
+                  tools=self.tools, messages=self.messages + list(paused), cache_control={"type": "ephemeral"},
                   thinking={"type": "adaptive", "display": "summarized",
                             "block_binding": {"prefix_mismatch_behavior": "drop_block"}},
                   output_config={"effort": self.effort}, betas=list(BETAS))
@@ -143,8 +143,8 @@ class Agent:
             kw["betas"].append(FALLBACK_BETA)
         return kw
 
-    def call(self):
-        with self.client.beta.messages.stream(**self.request_args()) as stream:
+    def call(self, paused=()):
+        with self.client.beta.messages.stream(**self.request_args(paused)) as stream:
             for ev in stream:
                 if ev.type == "content_block_delta":
                     if ev.delta.type == "text_delta":
@@ -159,7 +159,8 @@ class Agent:
         for i in (u.iterations or [u]):  # each iteration (compaction, declined attempt, fallback) has its own price
             model = getattr(i, "model", None) or resp.model
             pin, pout, pread, pwrite = PRICES.get(model) or PRICES["claude-opus-5-5"]
-            if "haiku-5-5" in model and n(i.input_tokens) + n(i.cache_read_input_tokens) > 100_000:
+            prompt = n(i.input_tokens) + n(i.cache_read_input_tokens) + n(getattr(i, "cache_creation_input_tokens", 0))
+            if "haiku-5-5" in model and prompt > 100_000:
                 pin, pout, pread, pwrite = 0.50, 2.50, 0.05, 0.625  # long-prompt rate card
             cost += (n(getattr(i, "input_tokens", 0)) * pin + n(getattr(i, "output_tokens", 0)) * pout
                      + n(getattr(i, "cache_read_input_tokens", 0)) * pread
@@ -167,9 +168,11 @@ class Agent:
         if u.server_tool_use:
             cost += n(u.server_tool_use.web_search_requests) * WEB_SEARCH_PRICE
         self.cost += cost
-        last = next((i for i in reversed(u.iterations or []) if i.type in ("message", "fallback_message")), u)
-        self.last_context = sum(n(getattr(last, f, 0)) for f in
-                                ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"))
+        last = next((i for i in reversed(u.iterations or []) if i.type in ("message", "fallback_message")),
+                    None if u.iterations else u)
+        if last:  # a compaction-only response says nothing about the conversation's size
+            self.last_context = sum(n(getattr(last, f, 0)) for f in
+                                    ("input_tokens", "cache_read_input_tokens", "cache_creation_input_tokens", "output_tokens"))
         self.session.append("usage", usage=u.to_dict(exclude_none=True), cost=round(cost, 6), context=self.last_context)
         drops = [t.to_dict() for t in (resp.input_transformations or [])]
         if drops:
@@ -183,9 +186,10 @@ class Agent:
         self.goal_claim = None
         self.repair()  # closes anything an earlier Ctrl-C left open; only appends
         self.add_user(content)
+        paused = []  # replies that paused on a server tool; committed only with the reply that completes them
         while True:
             try:
-                resp = self.call()
+                resp = self.call(paused)
             except KeyboardInterrupt:
                 self.placeholder("interrupted by the user")
                 self.ui.warn("interrupted")
@@ -195,16 +199,23 @@ class Agent:
                 self.ui.warn(f"request failed: {e}")
                 return "error"
             blocks = clean([b.to_dict(exclude_none=True) for b in resp.content])
+            self.track(resp)
+            if resp.stop_reason == "pause_turn":  # a server tool paused; send it back, unchanged, to continue
+                paused.append({"role": "assistant", "content": blocks})
+                if len(paused) < 5:
+                    continue
+                self.placeholder("a server tool kept pausing; stopped")
+                return "pause_turn"
             if resp.stop_reason == "refusal" or all(b["type"] == "fallback" for b in blocks):
                 # a refused partial is discarded; an empty assistant message would 400 every later request
                 self.placeholder(f"no content: {resp.stop_reason}" if not blocks else "declined")
                 blocks = []  # nothing of the declined reply is in the transcript, so no tool calls to answer
             else:
+                for p in paused:
+                    self.add(p)
                 self.add({"role": "assistant", "content": blocks})
-            self.track(resp)
+            paused = []
             self.ui.end_message()
-            if resp.stop_reason == "pause_turn":  # a server tool paused; send it back to continue
-                continue
             uses = [b for b in blocks if b["type"] == "tool_use"]
             if uses:
                 results, interrupted = self.run_tools(uses, resp.stop_reason)
@@ -282,6 +293,7 @@ class Agent:
         """Swap the whole history for one server-written summary block."""
         if not self.messages:
             return False
+        before = self.last_context
         try:
             resp = self.client.beta.messages.create(
                 model=self.model, max_tokens=16000, system=[{"type": "text", "text": self.system}], tools=self.tools,
@@ -289,17 +301,17 @@ class Agent:
                 betas=list(BETAS))
         except Exception as e:
             self.ui.warn(f"compaction failed: {e}")
-            self.compact_failed_at = self.last_context
+            self.compact_failed_at = before
             return False
         self.track(resp)
         if resp.stop_reason != "compaction":
             self.ui.warn(f"no summary came back ({resp.stop_reason}); keeping the full history")
-            self.compact_failed_at = self.last_context
+            self.compact_failed_at = before
             return False
         msg = {"role": "assistant", "content": [b.to_dict(exclude_none=True) for b in resp.content]}
         self.messages = [msg]
         self.session.append("compact", message=msg)
-        self.last_context = 0
+        self.last_context, self.compact_failed_at = 0, 0
         self.ui.note("compacted")
         if self.goal and self.goal["status"] == "active":
             self.pending_system.append(self.goal_rules())

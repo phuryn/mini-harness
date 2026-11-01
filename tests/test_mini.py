@@ -549,7 +549,7 @@ def test_truncated_session_line_is_skipped(ws):
 def test_malformed_mcp_json_is_reported(ws):
     (ws / "mcp.json").write_text("{not json")
     hub = MCPHub(str(ws))
-    assert hub.errors and "not valid JSON" in hub.errors[0]
+    assert hub.errors and "not a valid MCP config" in hub.errors[0]
 
 
 def test_empty_allow_entry_approves_nothing(ws):
@@ -611,3 +611,53 @@ def test_failed_compaction_backs_off(ws, monkeypatch):
     agent.maybe_compact()
     agent.maybe_compact()
     assert len(client.beta.messages.creates) == 1
+
+
+# --- review round 5 regressions -----------------------------------------------
+
+def compaction_usage(stop_reason):
+    u = usage(inp=0, out=0)
+    u["iterations"] = [{"type": "compaction", "input_tokens": 200_000, "output_tokens": 10,
+                        "cache_read_input_tokens": 0, "cache_creation_input_tokens": 0}]
+    return reply(stop=stop_reason, u=u)
+
+
+def test_compaction_backoff_with_real_usage_shape(ws, monkeypatch):
+    monkeypatch.setattr("mini.loop.COMPACT_AT", 500)
+    agent, client, _ = make(ws, [reply(text("x"), u=usage(inp=1000)), compaction_usage("refusal"),
+                                 reply(text("y"), u=usage(inp=1100))])
+    agent.turn("hi")
+    agent.maybe_compact()
+    assert agent.last_context > 500 and agent.compact_failed_at > 500
+    agent.turn("again")
+    agent.maybe_compact()
+    assert len(client.beta.messages.creates) == 1
+
+
+def test_paused_server_tool_is_not_committed_if_the_continuation_fails(ws):
+    paused = reply(text("searching"), {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search",
+                                       "input": {"query": "x"}}, stop="pause_turn")
+    agent, client, _ = make(ws, [paused, RuntimeError("529"), reply(text("ok"))])
+    assert agent.turn("search") == "error"
+    assert not any(b.get("type") == "server_tool_use" for m in agent.messages if m["role"] == "assistant"
+                   for b in m["content"])
+    assert client.requests[1]["messages"][-1]["content"][1]["type"] == "server_tool_use"  # sent back unchanged
+
+
+def test_binary_output_is_decoded_not_crashed(ws):
+    (ws / "b.bin").write_bytes(b"\xff\xfe\x00abc")
+    out = LocalTools(str(ws), Approver(auto=True)).bash("cat b.bin")
+    assert "abc" in out
+
+
+def test_wrongly_shaped_mcp_json_is_reported(ws):
+    (ws / "mcp.json").write_text('{"mcpServers": []}')
+    assert "must be an object" in MCPHub(str(ws)).errors[0]
+
+
+def test_protected_write_prompt_shows_the_content(ws, monkeypatch):
+    shown = []
+    monkeypatch.setattr("builtins.input", lambda p: shown.append(p) or "n")
+    with pytest.raises(ToolError):
+        LocalTools(str(ws), Approver()).write("conftest.py", "import os; os.system('evil')")
+    assert "os.system" in shown[0]
