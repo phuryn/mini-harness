@@ -9,7 +9,7 @@ import anthropic
 from .ext import MCPHub, find_skills
 from .loop import OTHER, Agent
 from .session import Session, list_sessions
-from .tools import Approver, printable
+from .tools import CONTROL, Approver, printable
 
 DIM, YEL, CYA, RED, OFF = "\033[2m", "\033[33m", "\033[36m", "\033[31m", "\033[0m"
 
@@ -33,10 +33,10 @@ class UI:
             self.mode = mode
 
     def text(self, s):
-        self._out("text", s)
+        self._out("text", CONTROL.sub("", s))  # the model's text can't drive the terminal
 
     def thinking(self, s):
-        self._out("think", DIM + s + OFF)
+        self._out("think", DIM + CONTROL.sub("", s) + OFF)
 
     def end_message(self):
         if self.mode:
@@ -58,7 +58,7 @@ class UI:
         self._say(f"{DIM}· {s}{OFF}")
 
     def warn(self, s):
-        print(f"{self.indent}{YEL}! {s}{OFF}", file=sys.stderr)
+        print(f"{self.indent}{YEL}! {CONTROL.sub('', s)}{OFF}", file=sys.stderr)
 
     def child(self):
         return UI(self.indent + "    ", quiet=True, silent=self.silent)

@@ -19,7 +19,7 @@ import anthropic
 
 from .context import build_system
 from .session import HOME, Session
-from .tools import SCHEMAS, WEB_SEARCH, LocalTools, ToolError, printable, run_shell, schema, truncate
+from .tools import CONTROL, SCHEMAS, WEB_SEARCH, LocalTools, ToolError, run_shell, schema, truncate
 
 MAIN_MODEL = os.environ.get("MINI_MODEL", "claude-opus-5-5")
 SUB_MODEL = "claude-sonnet-5-5"
@@ -55,7 +55,6 @@ JUDGE = {"type": "choice", "instructions": "A coding agent wants to take the act
     "deny": "Deletes or overwrites data, sends data off the machine, touches credentials, keys or system settings, "
             "installs software, writes files that run later (hooks, build config), or is off the request"}}
 
-HARNESS_TEXT = ("The harness ran", "Continue toward the goal", "Context was compacted", "Resume work toward")
 GOAL_RULES = (
     "Goal mode is on. Objective: {objective}\n"
     "The harness will keep asking you to continue until you call goal_done. Call goal_done only when the objective is "
@@ -241,8 +240,7 @@ class Agent:
         asked, typed, answers = [], 0, 0  # newest first: the last 6 messages and 3 answers, in their real order
         for e in reversed(self.session.events()):
             c = e.get("message", {}).get("content")
-            if typed < 6 and e["kind"] == "msg" and e["message"]["role"] == "user" and isinstance(c, str) \
-                    and not e.get("by") and not c.startswith(HARNESS_TEXT):  # untagged: sessions older than the tag
+            if typed < 6 and e["kind"] == "msg" and e["message"]["role"] == "user" and isinstance(c, str) and not e.get("by"):
                 asked, typed = [c[:2000]] + asked, typed + 1
             elif answers < 3 and e["kind"] == "answer":
                 asked, answers = [f"(answered a question from the agent) {e['a'][:1000]}"] + asked, answers + 1
@@ -348,7 +346,7 @@ class Agent:
             if not self.approver.interactive:
                 return "Nobody can answer: this is a headless run. Assume what's most reasonable, say so, go on."
             self.ui.end_message()
-            answer = input(f"\033[33m  ? {printable(args['question'], lines=True)}\n  > \033[0m").strip() or "(no answer)"
+            answer = input(f"\033[33m  ? {CONTROL.sub('', args['question'])}\n  > \033[0m").strip() or "(no answer)"
             self.session.append("answer", q=args["question"], a=answer)  # the judge counts it as the user's words
             return answer
         if name == "goal_done":

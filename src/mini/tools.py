@@ -7,6 +7,7 @@ import contextlib
 import os
 import re
 import shlex
+import shutil
 import signal
 import subprocess
 from pathlib import Path
@@ -18,12 +19,15 @@ class ToolError(Exception):
     pass
 
 
+CONTROL = re.compile(r"[\x00-\x08\x0b-\x1f\x7f-\x9f]")  # terminal control codes; keeps \n, \t and readable Unicode
+
+
 def printable(text: str, lines: bool = False) -> str:
     """Nothing can hide in a prompt: padding is counted, everything outside plain ASCII is escaped, and real line
     breaks are kept only where asked (file content)."""
     text = re.sub(" {16,}" if lines else " {3,}", lambda m: f"[{len(m[0])} spaces]", text)  # code keeps its indent
     text = re.sub(r"(\n[ \t]*){3,}", lambda m: f"\n[{m[0].count(chr(10)) - 1} blank lines]\n", text) if lines else text
-    return "".join(c if c.isascii() and c.isprintable() or lines and c == "\n"
+    return "".join(c if c.isascii() and c.isprintable() and c != "\\" or lines and c == "\n"
                    else c.encode("unicode_escape").decode() for c in text)
 
 
@@ -55,7 +59,7 @@ class Approver:
     SHELL = set(";&|<>`$(){}\n\r\\")
 
     def __init__(self, auto: bool = False, interactive: bool = True, allow: tuple = (), use_judge: bool = False):
-        self.auto, self.interactive, self.always = auto, interactive, set()
+        self.auto, self.interactive = auto, interactive
         self.use_judge, self.judge, self.reason = use_judge, None, ""  # judge(kind, detail) -> (allow|deny|ask, why)
         self.allow = [shlex.split(a) for a in allow if a.strip()]
 
@@ -69,7 +73,7 @@ class Approver:
         return bool(words) and (words[0] in self.SAFE or any(words[:len(a)] == a for a in self.allow))
 
     def ok(self, kind: str, detail: str) -> bool:
-        if self.auto or kind in self.always or (kind == "bash" and self.pre_approved(detail)):
+        if self.auto or (kind == "bash" and self.pre_approved(detail)):
             return True
         if kind == "mcp" and any(detail.split()[0].startswith(a[0]) for a in self.allow):
             return True
@@ -84,14 +88,15 @@ class Approver:
                 return verdict == "allow"
         if not self.interactive:
             return False
-        shown = printable(detail, kind == "write")
-        always = kind != "write"  # protected writes are asked one by one; the path is repeated next to the answer
-        hint = f"y/n/a=all {kind} calls until you quit" if always else \
-            f"{printable(detail.splitlines()[0])}, {len(detail.split(chr(10), 1)[1].splitlines())} lines shown · y/n"
-        ans = input(f"\033[33m  allow {kind}: {shown}  [{hint}] \033[0m").strip().lower()
-        if ans == "a" and always:
-            self.always.add(kind)
-        return ans in ("y", "yes") or (ans == "a" and always)
+        # Every row carries a marker content can't fake, and nothing taller than a screen is shown at all.
+        cols = max(shutil.get_terminal_size().columns - 6, 20)
+        rows = [r[i:i + cols] for r in printable(detail, kind == "write").split("\n") for i in range(0, len(r) or 1, cols)]
+        if len(rows) > 40:
+            self.reason = " Too long to review on one screen: split it into smaller steps."
+            return False
+        head = printable(detail.split("\n", 1)[0] if kind == "write" else kind)  # the path, by the answer
+        return input(f"\033[0m\033[?7h\033[33m  allow {kind}:" + "".join(f"\n  \u2502 {r}" for r in rows)
+                     + f"\n  [{head} · {len(rows)} rows · y/n] \033[0m").strip().lower() in ("y", "yes")
 
 
 class LocalTools:
