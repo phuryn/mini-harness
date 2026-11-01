@@ -11,6 +11,7 @@ import concurrent.futures
 import contextlib
 import json
 import re
+import tempfile
 import threading
 from pathlib import Path
 
@@ -67,7 +68,8 @@ class MCPHub:
         from mcp.client.stdio import stdio_client
         params = StdioServerParameters(command=spec["command"], args=spec.get("args", []), env=spec.get("env"))
         try:
-            async with stdio_client(params) as (read, write), ClientSession(read, write) as session:
+            log = open(Path(tempfile.gettempdir()) / "mini-mcp.log", "a")  # a server's output never reaches the terminal
+            async with stdio_client(params, errlog=log) as (read, write), ClientSession(read, write) as session:
                 await session.initialize()
                 listed = (await session.list_tools()).tools
                 if ready.done():  # startup already timed out; don't register late tools

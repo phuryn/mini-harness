@@ -91,11 +91,11 @@ class Approver:
         # Every row carries a marker content can't fake, and nothing taller than a screen is shown at all.
         cols = max(shutil.get_terminal_size().columns - 6, 20)
         rows = [r[i:i + cols] for r in printable(detail, kind == "write").split("\n") for i in range(0, len(r) or 1, cols)]
-        if len(rows) > 40:
-            self.reason = " Too long to review on one screen: split it into smaller steps."
+        if len(rows) > max(min(40, shutil.get_terminal_size().lines - 3), 10):  # the top must stay on screen
+            self.reason = " Too long to review on one screen: split it, or write a short file and extend it with edit."
             return False
         head = printable(detail.split("\n", 1)[0] if kind == "write" else kind)  # the path, by the answer
-        return input(f"\033[0m\033[?7h\033[33m  allow {kind}:" + "".join(f"\n  \u2502 {r}" for r in rows)
+        return input(f"\033[!p\033[r\033[0m\033[?7h\033[33m  allow {kind}:" + "".join(f"\n  \u2502 {r}" for r in rows)
                      + f"\n  [{head} · {len(rows)} rows · y/n] \033[0m").strip().lower() in ("y", "yes")
 
 

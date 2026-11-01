@@ -72,8 +72,8 @@ def status_line(agent):
 
 
 def print_goal(g):
-    print("No goal." if not g else f"Goal [{g['status']}] {g['objective']}\n  {g['turns']} turns ({g['max_turns']} per run) · ${g['spent']:.3f}"
-          + (f" · {g['note']}" if g.get("note") else ""))
+    print("No goal." if not g else CONTROL.sub("", f"Goal [{g['status']}] {g['objective']}\n  {g['turns']} turns "
+          f"({g['max_turns']} per run) · ${g['spent']:.3f}" + (f" · {g['note']}" if g.get("note") else "")))
 
 
 def main():
@@ -95,11 +95,9 @@ def main():
     p.add_argument("--budget", type=float, help="with --goal: stop after this many dollars")
     p.add_argument("--json", action="store_true", help="headless: print a JSON result line at the end")
     args = p.parse_args()
-    if args.models:
-        if os.environ.get("ANTHROPIC_API_KEY"):
-            print(*[m.id for m in anthropic.Anthropic().models.list()], sep="\n")
-        print(*OTHER, sep="\n")
-        return
+    if args.models:  # listing Claude models needs an Anthropic key; the others are always listed
+        claude = [m.id for m in anthropic.Anthropic().models.list()] if os.environ.get("ANTHROPIC_API_KEY") else []
+        return print(*claude, *OTHER, sep="\n")
 
     cwd = os.getcwd()
     headless = bool(args.prompt or args.goal)

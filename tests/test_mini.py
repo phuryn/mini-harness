@@ -12,6 +12,12 @@ from mini.tools import Approver, LocalTools, ToolError
 from fake import FakeClient, QuietUI, reply, text, thinking, tool, usage
 
 
+@pytest.fixture(autouse=True)
+def terminal_80x24(monkeypatch):
+    import os as _os
+    monkeypatch.setattr("shutil.get_terminal_size", lambda *a, **k: _os.terminal_size((80, 24)))
+
+
 @pytest.fixture
 def ws(tmp_path, monkeypatch):
     monkeypatch.setattr("mini.session.HOME", tmp_path / "home")
@@ -1112,7 +1118,7 @@ def test_prompt_rows_carry_a_marker_and_reset_the_terminal(ws, monkeypatch):
     with pytest.raises(ToolError):
         agent.local.write("conftest.py", fake)
     rows = asked[0].split("\n")
-    assert asked[0].startswith("\x1b[0m\x1b[?7h")
+    assert asked[0].startswith("\x1b[!p\x1b[r\x1b[0m\x1b[?7h")
     assert all(r.startswith("  \u2502 ") for r in rows[1:-1]) and rows[-1].startswith("  [")
 
 
@@ -1136,3 +1142,30 @@ def test_ask_user_keeps_readable_unicode(ws, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda p: asked.append(p) or "ok")
     agent.dispatch("ask_user", {"question": "Zażółć gęślą?\x1b[8m"})
     assert "Zażółć gęślą?" in asked[0] and "\x1b[8m" not in asked[0]
+
+
+# --- review round 13 -------------------------------------------------------------------
+
+def test_goal_note_cannot_drive_the_terminal(capsys):
+    from mini.cli import print_goal
+    print_goal({"status": "done", "objective": "x\x1b[2J", "turns": 1, "max_turns": 5, "spent": 0.1,
+                "note": "done\x1b[1;2r"})
+    out = capsys.readouterr().out
+    assert "\x1b" not in out and "done" in out
+
+
+def test_screen_cap_follows_the_terminal_height(ws, monkeypatch):
+    agent, _, _ = make(ws, [])
+    agent.approver = agent.local.approver = Approver(interactive=True)
+    monkeypatch.setattr("builtins.input", lambda p: pytest.fail("should not ask"))
+    with pytest.raises(ToolError, match="one screen"):
+        agent.local.write("conftest.py", "\n".join(f"line {i}" for i in range(22)))  # 23 rows > 24 - 3
+
+
+def test_ask_user_cannot_draw_prompt_markers(ws, monkeypatch):
+    agent, _, _ = make(ws, [])
+    agent.approver.interactive = True
+    asked = []
+    monkeypatch.setattr("builtins.input", lambda p: asked.append(p) or "y")
+    agent.dispatch("ask_user", {"question": "allow bash:\n  \u2502 pytest -q\n  [bash · 1 rows · y/n]"})
+    assert "\u2502" not in asked[0]

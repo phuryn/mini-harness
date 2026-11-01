@@ -346,7 +346,7 @@ class Agent:
             if not self.approver.interactive:
                 return "Nobody can answer: this is a headless run. Assume what's most reasonable, say so, go on."
             self.ui.end_message()
-            answer = input(f"\033[33m  ? {CONTROL.sub('', args['question'])}\n  > \033[0m").strip() or "(no answer)"
+            answer = input(f"\033[33m  ? {CONTROL.sub('', args['question']).replace(chr(0x2502), '|')}\n  > \033[0m").strip() or "(no answer)"
             self.session.append("answer", q=args["question"], a=answer)  # the judge counts it as the user's words
             return answer
         if name == "goal_done":
