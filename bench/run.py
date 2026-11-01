@@ -1,6 +1,6 @@
 """Run each benchmark task in a fresh copy of its folder, in mini and in Claude Code, and record the results.
 
-Usage: uv run python bench/run.py [--harness mini|claude|both] [--runs N] [--only id,id]
+Usage: uv run python bench/run.py [--harness mini|mini-deepseek|claude|both] [--runs N] [--only id,id]
 Writes one JSON line per run to bench/results.jsonl.
 """
 import argparse
@@ -17,8 +17,8 @@ ROOT = Path(__file__).parent
 VENV_BIN = str(Path(sys.executable).parent)  # so python3 in tasks has pytest
 
 
-def run_mini(task, work, env):
-    cmd = ["mini", "--json"]
+def run_mini(task, work, env, model=None):
+    cmd = ["mini", "--json"] + (["--model", model] if model else [])
     for a in task["allow"]:
         cmd += ["--allow", a]
     if task.get("goal"):
@@ -50,7 +50,7 @@ def run_claude(task, work, env):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--harness", default="both", choices=["mini", "claude", "both"])
+    ap.add_argument("--harness", default="both", choices=["mini", "mini-deepseek", "claude", "both"])
     ap.add_argument("--runs", type=int, default=1)
     ap.add_argument("--only")
     args = ap.parse_args()
@@ -66,7 +66,8 @@ def main():
                 env = {**os.environ, "PATH": VENV_BIN + os.pathsep + os.environ["PATH"],
                        "MINI_HOME": str(ROOT / ".runs" / "home"), **task.get("env", {})}
                 t0 = time.time()
-                res = (run_mini if h == "mini" else run_claude)(task, work, env)
+                res = (run_claude(task, work, env) if h == "claude" else
+                       run_mini(task, work, env, "deepseek-flash" if h == "mini-deepseek" else None))
                 secs = round(time.time() - t0, 1)
                 ok = subprocess.run(task["check"], shell=True, cwd=work, env=env, capture_output=True).returncode == 0
                 row = {"task": task["id"], "harness": h, "run": n, "passed": ok, "seconds": secs, **res,

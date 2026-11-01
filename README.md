@@ -1,6 +1,6 @@
 # mini
 
-A minimal agent harness for Claude, small enough to read in one sitting. It has a tool loop, four local tools, sessions you can resume, compaction, skills, MCP servers, subagents, a `/goal` mode, and memory kept in markdown files. It has no UI framework, no plugin system and no dependencies beyond `anthropic` and `mcp`.
+A minimal agent harness for Claude (and DeepSeek), small enough to read in one sitting. It has a tool loop, four local tools, sessions you can resume, compaction, skills, MCP servers, subagents, a `/goal` mode, a permission judge, and memory kept in markdown files. It has no UI framework, no plugin system and no dependencies beyond `anthropic` and `mcp`.
 
 It's built to show what a harness actually has to do, and which parts you can leave out.
 
@@ -20,7 +20,9 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 
 | Command | What it does |
 |---|---|
-| `/new` | Start a fresh session |
+| `/new [model]` | Start a fresh session, on another model if given |
+| `/effort [level]` | Show or change the effort for the next requests |
+| `/permissions [mode]` | `ask`, `judge` or `yes`: who approves risky calls |
 | `/sessions` | List recent sessions in this directory |
 | `/resume [id]` | Resume the latest session, or one by id prefix |
 | `/compact` | Replace the history with a summary now |
@@ -36,22 +38,23 @@ Ctrl-C stops the current turn and keeps the session valid.
 | `--goal "..." --verify "pytest -q"` | Headless goal mode. The goal only counts as done when the verify command passes |
 | `--max-turns N`, `--budget 2.50` | Limits for goal mode (turns, dollars) |
 | `--allow "python3 -m pytest"` | Pre-approve bash commands that start with these words, or MCP tools whose name starts with this prefix (repeatable). Headless mode denies everything else |
-| `--yes` | Approve every tool call. Only use this in a sandbox |
-| `--model`, `--effort` | Main model (default `claude-opus-5-5`) and effort (default `high`) |
+| `--permissions ask\|judge\|yes` | Who approves risky calls: you (headless denies), the Jev judge, or nobody (`yes`, only in a sandbox) |
+| `--model`, `--effort` | Main model (default `claude-opus-5-5`, or `deepseek-flash`) and effort (default `high`) |
+| `--models` | List the models your key can use, then exit |
 | `--json` | Headless: print one JSON line with status, cost and answer |
 
 ## What's in it
 
 | File | Lines | Job |
 |---|---|---|
-| `loop.py` | 346 | Model calls, tool dispatch, subagents, compaction, `/goal`, cost |
-| `cli.py` | 180 | REPL, slash commands, headless mode |
-| `tools.py` | 179 | read, write, edit, bash, approval gate |
-| `ext.py` | 90 | Skills discovery, MCP stdio hub |
+| `loop.py` | 424 | Model calls, tool dispatch, subagents, compaction, `/goal`, the judge, providers, cost |
+| `cli.py` | 200 | REPL, slash commands, headless mode |
+| `tools.py` | 184 | read, write, edit, bash, approval gate |
+| `ext.py` | 86 | Skills discovery, MCP stdio hub |
 | `session.py` | 73 | JSONL session files |
-| `context.py` | 28 | The frozen system prompt |
+| `context.py` | 25 | The frozen system prompt |
 
-That's 898 lines of code (not counting blank lines, comments or docstrings), and about 120 of them are prompts, tool descriptions and schemas.
+That's 994 lines of code (not counting blank lines, comments or docstrings), and about 150 of them are prompts, tool descriptions and schemas.
 
 ## How it works
 
@@ -91,11 +94,26 @@ Their tools appear as `mcp__<server>__<tool>`, and each call asks for approval u
 
 **`/goal`.** This sets an objective and keeps the model going. After each turn the harness either sends "continue", or, if the model called `goal_done`, runs the `--verify` command and accepts the goal only if it passes. A failed check goes back to the model with its output. The loop also stops when the model writes `BLOCKED:` because it needs you, at the turn limit, at the budget, or on Ctrl-C. Goal state is saved in the session, so `/resume` followed by `/goal resume` picks it back up. When a goal stops, the model is told that goal mode is off, even across a restart. `--verify` runs in your shell, so a verify command that runs the project's tests also runs code the model wrote.
 
+**Models and providers.** `--model` (or `/new <model>`) picks the model for a session, and `mini --models` lists what your key can use. The model stays fixed for the whole session, because a switch would drop the replayed thinking. Effort can change at any time with `/effort`: it's a setting on each request, not part of the history. Each provider has its own levels (Claude: low to max; DeepSeek: low, high, max).
+
+DeepSeek V4.1 Flash (`--model deepseek-flash`, key in `DEEPSEEK_API_KEY`) runs through DeepSeek's Anthropic-format endpoint, so the loop, tools, sessions and web search are the same code. What it lacks is Anthropic's server-side compaction and fallbacks. For DeepSeek, mini compacts on its own: it asks the model for a summary and starts a new segment from it. Subagents run on the same model. Any other endpoint that speaks Anthropic's format can go in `~/.mini/models.json`, with its context window and compaction threshold:
+
+```json
+{"my-model": {"base_url": "https://example.com/anthropic", "key": "MY_API_KEY", "window": 262144,
+              "compact_at": 150000, "search": 0, "efforts": ["low", "high"], "prices": [0.5, 2, 0.05, 0.5]}}
+```
+
+Keys stay in environment variables, never on the command line, where shell history and `ps` would keep them. An OpenAI-format endpoint would need a translation layer for messages, tools and thinking, which is more code than the rest of this file.
+
+**The permission judge.** With `--permissions judge` (or `/permissions judge`), a risky call goes to [Jev](https://www.productcompass.pm/p/jev-decision-model), a decision model on OpenRouter, before it would reach you. Jev answers allow or deny with a confidence. Below 0.8 the call asks you, and in headless mode it's denied. If Jev can't be reached, the call is denied. A denial goes back to the model with the reason, so it can change course. Jev sees your own messages and the action, nothing else: not the model's reasoning, and not tool output, because files and web pages can carry instructions aimed at whoever reads them. A check costs about $0.00002. It's still a model judging a model, not a sandbox.
+
+**Asking you.** The `ask_user` tool lets the model ask a question mid-task. In headless runs nobody answers, so the model is told to make its best assumption and say what it assumed.
+
 **Cost.** Each turn prints the running total, using the cache-read rates. Cache hits come from one top-level `cache_control` marker. Because the prefix never changes, the cache stays warm.
 
 ## Left out on purpose
 
-A TUI, hooks, plugins, a sandbox, worktrees, checkpoints (use git), multiple providers, non-blocking subagents, tool search, model switching mid-session, streaming tool input, and ACP editor integration. Each one is a reasonable next step, and none is needed for the harness to do real work.
+A TUI, hooks, plugins, a sandbox, worktrees, checkpoints (use git), OpenAI-format providers, non-blocking subagents, tool search, model switching mid-session, streaming tool input, and ACP editor integration. Each one is a reasonable next step, and none is needed for the harness to do real work.
 
 ## Tests
 
