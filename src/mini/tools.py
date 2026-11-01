@@ -3,6 +3,7 @@
 A tool is a JSON schema the model sees and a Python function the harness runs.
 `edit` refuses to touch a file that changed since the model last read it.
 """
+import contextlib
 import os
 import shlex
 import signal
@@ -25,15 +26,12 @@ def run_shell(command: str, cwd, timeout: int):
     """Run a shell command with no stdin; on timeout or Ctrl-C kill its whole process group."""
     proc = subprocess.Popen(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                            env={**os.environ, "PAGER": "cat"},
-                            start_new_session=True)
+                            env={**os.environ, "PAGER": "cat"}, start_new_session=True)
     try:
         out, err = proc.communicate(timeout=timeout)
     except BaseException:
-        try:
+        with contextlib.suppress(ProcessLookupError):  # already gone
             os.killpg(proc.pid, signal.SIGKILL)
-        except ProcessLookupError:  # already gone
-            pass
         proc.wait()
         raise
     return proc.returncode, out, err
@@ -47,14 +45,15 @@ def truncate(text: str) -> str:
 
 
 class Approver:
-    """Asks before risky calls. `auto=True` approves everything (headless --yes)."""
+    """Asks before risky calls. `auto=True` approves everything (--permissions yes)."""
 
     # Commands that can't run other programs or write files, whatever their flags.
     SAFE = {"ls", "cat", "head", "tail", "wc", "pwd", "grep", "echo", "which", "stat", "diff"}
     SHELL = set(";&|<>`$(){}\n\r\\")
 
-    def __init__(self, auto: bool = False, interactive: bool = True, allow: tuple = ()):
+    def __init__(self, auto: bool = False, interactive: bool = True, allow: tuple = (), use_judge: bool = False):
         self.auto, self.interactive, self.always = auto, interactive, set()
+        self.use_judge, self.judge, self.reason = use_judge, None, ""  # judge(kind, detail) -> (allow|deny|ask, why)
         self.allow = [shlex.split(a) for a in allow if a.strip()]
 
     def pre_approved(self, command: str) -> bool:
@@ -71,6 +70,12 @@ class Approver:
             return True
         if kind == "mcp" and any(detail.split()[0].startswith(a[0]) for a in self.allow):
             return True
+        self.reason = ""
+        if self.use_judge and self.judge:
+            verdict, why = self.judge(kind, detail)
+            self.reason = f" Judge: {why}"
+            if verdict != "ask":
+                return verdict == "allow"
         if not self.interactive:
             return False
         if len(detail) > 4000:
@@ -139,7 +144,7 @@ class LocalTools:
         if p.exists() and p.stat().st_mtime != self.seen.get(p):
             raise ToolError("File exists and you haven't read its current version. Read it first, or use edit.")
         if self._ask(p) and not self.approver.ok("write", f"{p}\n{preview(content)}"):
-            raise ToolError("User denied this write (outside the project, or a file that runs later).")
+            raise ToolError("User denied this write (outside the project, or a file that runs later)." + self.approver.reason)
         p.parent.mkdir(parents=True, exist_ok=True)
         if p.exists():
             with p.open(newline="") as f:
@@ -156,7 +161,7 @@ class LocalTools:
         if p.stat().st_mtime != self.seen[p]:
             raise ToolError("File changed since you last read it. Read it again.")
         if self._ask(p) and not self.approver.ok("write", f"{p}\n- {preview(old)}\n+ {preview(new)}"):
-            raise ToolError("User denied this edit (outside the project, or a file that runs later).")
+            raise ToolError("User denied this edit (outside the project, or a file that runs later)." + self.approver.reason)
         if not old:
             raise ToolError("`old` must not be empty.")
         with p.open(newline="") as f:  # keep the file's own line endings
@@ -175,7 +180,7 @@ class LocalTools:
 
     def bash(self, command: str, timeout: int = 120) -> str:
         if not self.approver.ok("bash", command):
-            raise ToolError("User denied this command.")
+            raise ToolError("User denied this command." + self.approver.reason)
         try:
             code, stdout, stderr = run_shell(command, self.cwd, max(timeout, 1))
         except subprocess.TimeoutExpired:

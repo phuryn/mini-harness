@@ -65,7 +65,7 @@ class Session:
             elif e["kind"] == "msgs":  # several messages that only make sense together
                 messages.extend(e["messages"])
             elif e["kind"] == "compact":
-                messages, context = [e["message"]], 0
+                messages, context = list(e.get("messages") or [e["message"]]), 0
             elif e["kind"] == "goal":
                 goal = e["goal"] if e["goal"]["status"] != "cleared" else None
             elif e["kind"] == "usage":

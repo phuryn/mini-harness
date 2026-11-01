@@ -8,6 +8,7 @@ connections, and calls cross over with run_coroutine_threadsafe.
 """
 import asyncio
 import concurrent.futures
+import contextlib
 import json
 import re
 import threading
@@ -35,9 +36,7 @@ class MCPHub:
     """Connects to every server in mcp.json and exposes tools as mcp__server__tool."""
 
     def __init__(self, cwd: str):
-        self.tools: dict[str, tuple] = {}  # api name -> (session, real name)
-        self.schemas: list[dict] = []
-        self.errors: list[str] = []
+        self.tools, self.schemas, self.errors = {}, [], []  # tools: api name -> (session, real name)
         cfg = next((p for p in [Path(cwd) / "mcp.json", Path.home() / ".mini" / "mcp.json"] if p.exists()), None)
         if not cfg:
             return
@@ -103,7 +102,5 @@ class MCPHub:
         if hasattr(self, "loop"):
             self.loop.call_soon_threadsafe(self.stop.set)
             for t in self.tasks:
-                try:
+                with contextlib.suppress(Exception):
                     t.result(5)
-                except Exception:
-                    pass

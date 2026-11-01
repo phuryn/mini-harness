@@ -1,17 +1,21 @@
-"""Talking to it: a readline REPL with six slash commands, or headless with -p."""
+"""Talking to it: a readline REPL with nine slash commands, or headless with -p."""
 import argparse
 import json
 import os
 import sys
 
+import anthropic
+
 from .ext import MCPHub, find_skills
-from .loop import Agent
+from .loop import OTHER, Agent
 from .session import Session, list_sessions
 from .tools import Approver
 
 DIM, YEL, CYA, RED, OFF = "\033[2m", "\033[33m", "\033[36m", "\033[31m", "\033[0m"
 
-HELP = """/new                 start a fresh session
+HELP = """/new [model]         start a fresh session, on another model if given (see mini --models)
+/effort [level]      show or change the effort for the next requests
+/permissions [mode]  ask, judge or yes: who approves risky calls
 /sessions            list recent sessions
 /resume [id]         resume the latest session, or one by id prefix
 /compact             replace the history with a summary now
@@ -24,22 +28,17 @@ class UI:
         """quiet hides streamed text and thinking (subagents); silent hides everything but warnings (--json)."""
         self.indent, self.quiet, self.silent, self.mode = indent, quiet or silent, silent, None
 
-    def _switch(self, mode):
-        if self.mode != mode:
-            sys.stdout.write("\n" if self.mode else "")
+    def _out(self, mode, s):
+        if not self.quiet:
+            sys.stdout.write(("\n" if self.mode and self.mode != mode else "") + s)
+            sys.stdout.flush()
             self.mode = mode
 
     def text(self, s):
-        if not self.quiet:
-            self._switch("text")
-            sys.stdout.write(s)
-            sys.stdout.flush()
+        self._out("text", s)
 
     def thinking(self, s):
-        if not self.quiet:
-            self._switch("think")
-            sys.stdout.write(DIM + s + OFF)
-            sys.stdout.flush()
+        self._out("think", DIM + s + OFF)
 
     def end_message(self):
         if self.mode:
@@ -71,7 +70,8 @@ class UI:
 
 def status_line(agent):
     # right after compaction the size is unknown until the next reply reports it
-    ctx = f"{agent.last_context:,} tokens in context" if agent.last_context else "context just compacted"
+    ctx = ("context just compacted" if agent.messages and not agent.last_context
+           else f"{agent.last_context:,} of {agent.window:,} tokens in context")
     return f"{DIM}[{agent.session.id} · {ctx} · ${agent.cost:.3f} total]{OFF}"
 
 
@@ -89,8 +89,11 @@ def main():
     p.add_argument("-c", "--continue", dest="cont", action="store_true", help="continue the latest session")
     p.add_argument("-r", "--resume", help="resume a session by id prefix")
     p.add_argument("--model", help="main model (default claude-opus-5-5)")
-    p.add_argument("--effort", default="high", choices=["low", "medium", "high", "xhigh", "max"])
-    p.add_argument("--yes", action="store_true", help="approve every tool call")
+    p.add_argument("--effort", default="high", help="low, medium, high, xhigh or max (DeepSeek: low, high, max)")
+    p.add_argument("--models", action="store_true", help="list the models you can use, then exit")
+    p.add_argument("--permissions", default="ask", choices=["ask", "judge", "yes"],
+                   help="who approves risky calls: you (denied when headless), Jev, a decision model that still asks "
+                        "when unsure (needs OPENROUTER_API_KEY), or nobody (yes: sandbox only)")
     p.add_argument("--allow", action="append", default=[], metavar="PREFIX",
                    help="approve bash commands that start with these words, or MCP tools whose name starts with "
                         "PREFIX (repeatable). Writes inside the project are free, so allowing a test runner lets the "
@@ -101,11 +104,15 @@ def main():
     p.add_argument("--budget", type=float, help="with --goal: stop after this many dollars")
     p.add_argument("--json", action="store_true", help="headless: print a JSON result line at the end")
     args = p.parse_args()
+    if args.models:
+        print(*[m.id for m in anthropic.Anthropic().models.list()], *OTHER, sep="\n")
+        return
 
     cwd = os.getcwd()
     headless = bool(args.prompt or args.goal)
     ui = UI(silent=headless and args.json)
-    approver = Approver(auto=args.yes, interactive=not headless, allow=args.allow)
+    approver = Approver(auto=args.permissions == "yes", interactive=not headless, allow=args.allow,
+                        use_judge=args.permissions == "judge")
     hub, skills = MCPHub(cwd), find_skills(cwd)
     for e in hub.errors:
         ui.warn(f"MCP {e}")
@@ -115,8 +122,11 @@ def main():
         session = Session.find(cwd, args.resume)
         if not session:
             sys.exit("No session found.")
-    def new(s):
-        agent = Agent(cwd, s, ui, approver, hub=hub, skills=skills, model=args.model, effort=args.effort)
+    def new(s, model=None):
+        agent = Agent(cwd, s, ui, approver, hub=hub, skills=skills, model=model or args.model, effort=args.effort)
+        approver.judge = agent.judge
+        if agent.effort != args.effort:
+            ui.warn(f"{agent.model} doesn't take effort {args.effort}; using {agent.effort} ({', '.join(agent.efforts)})")
         agent.goal_defaults = {"verify": args.verify, "max_turns": args.max_turns, "budget": args.budget}
         return agent
 
@@ -171,7 +181,7 @@ def command(agent, line, new):
     if cmd == "/help":
         print(HELP)
     elif cmd == "/new":
-        agent = new(Session.create(cwd))
+        agent = new(Session.create(cwd), rest or None)
         print(f"{DIM}new session {agent.session.id}{OFF}")
     elif cmd == "/sessions":
         for sid, turns, cost, first in list_sessions(cwd):
@@ -185,6 +195,17 @@ def command(agent, line, new):
         print(f"{DIM}resumed {agent.session.id} ({len(agent.messages)} messages){OFF}")
         if agent.goal:
             print_goal(agent.goal)
+    elif cmd == "/permissions":
+        if rest in ("ask", "judge", "yes"):
+            agent.approver.auto, agent.approver.use_judge = rest == "yes", rest == "judge"
+        a = agent.approver
+        print(f"permissions {'yes' if a.auto else 'judge' if a.use_judge else 'ask'} · ask, judge or yes")
+    elif cmd == "/effort":
+        if rest in agent.efforts:
+            agent.effort = rest
+        elif rest:
+            print(f"{agent.model} has no effort {rest}")
+        print(f"effort {agent.effort} · {agent.model} takes {', '.join(agent.efforts)}")
     elif cmd == "/compact":
         agent.compact()
     elif cmd == "/goal":
