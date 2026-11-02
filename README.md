@@ -48,14 +48,14 @@ Ctrl-C stops the current turn and keeps the session valid.
 
 | File | Lines | Job |
 |---|---|---|
-| `loop.py` | 453 | Model calls, tool dispatch, subagents, compaction, `/goal`, the judge, providers, cost |
-| `cli.py` | 196 | REPL, slash commands, headless mode |
+| `loop.py` | 461 | Model calls, tool dispatch, subagents, compaction, `/goal` and its reviewer, the judge, providers, cost |
 | `tools.py` | 223 | read, write, edit, bash, find, approval gate |
-| `ext.py` | 87 | Skills discovery, MCP stdio hub |
+| `cli.py` | 198 | REPL, slash commands, headless mode |
+| `ext.py` | 98 | Skills discovery, MCP stdio hub |
 | `session.py` | 67 | JSONL session files |
-| `context.py` | 25 | The frozen system prompt |
+| `context.py` | 26 | The frozen system prompt |
 
-That's 1,053 lines of code (not counting blank lines, comments or docstrings), and about 160 of them are prompts, tool descriptions and schemas. It was 999 before the `find` tool, which was worth going over the 1,000-line target for.
+That's 1,075 lines of code (not counting blank lines, comments or docstrings), and about 160 of them are prompts, tool descriptions and schemas. It was 999 before the `find` tool, which was worth going over the 1,000-line target for.
 
 ## How it works
 
@@ -81,15 +81,15 @@ That's 1,053 lines of code (not counting blank lines, comments or docstrings), a
 
 **Memory and instructions.** At session start mini loads `AGENTS.md` (and only that file) plus `memory/INDEX.md`, which routes to area files such as `memory/decisions.md`. The model reads area files when a task touches them and updates them with `edit`, merging a new fact into what's there instead of appending, so the files stay short. `/dream` asks for a full review of `memory/` on demand. Changes take effect in the next session, because the prompt is frozen within a session.
 
-**Skills.** mini looks for `skills/*/SKILL.md`, `.agents/skills/*/SKILL.md` and `~/.mini/skills/*/SKILL.md`. Each skill's name and description go into the system prompt. When a task matches a skill, the model reads its file with `read`. No special tool is needed.
+**Skills.** mini reads [Agent Skills](https://agentskills.io): a folder with a `SKILL.md` that starts with a YAML header (`name`, `description`, folded multi-line values included). It looks in `skills/`, `.claude/skills/` and `.agents/skills/` in the project, and in `~/.mini/skills/`, so a project's Claude Code or Codex skills work as they are. Only each skill's name and description (the frontmatter) are injected into the system prompt, as one line per skill. When a task matches, the model reads the full `SKILL.md` with `read`, and any files it points to. No special tool is needed, and an unused skill costs one line. In a live test, Haiku, DeepSeek and Opus each read the matching skill before starting, ignored an unrelated one, and followed its house style; on an unrelated task none read a skill.
 
-**MCP.** List stdio servers in `mcp.json` (in the project directory or `~/.mini/`):
+**MCP.** List stdio servers in `mcp.json` or `.mcp.json` (the same `mcpServers` format Claude Code and Claude Desktop use) in the project directory, or in `~/.mini/mcp.json`. A server is any command: `npx`, `uvx`, `docker` or a local binary.
 
 ```json
 {"mcpServers": {"github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]}}}
 ```
 
-Their tools appear as `mcp__<server>__<tool>`, and each call asks for approval unless `--allow` covers it. A server that fails to start, or an `mcp.json` that isn't valid JSON, is reported and skipped.
+Their tools appear as `mcp__<server>__<tool>`, and each call asks for approval unless `--allow` covers it. A server that fails to start, or an `mcp.json` that isn't valid JSON, is reported and skipped. Remote servers (`"url"` entries) and OAuth aren't built in; a remote server can be bridged as a stdio command with `npx -y mcp-remote <url>`, which runs the OAuth login in your browser and keeps the token.
 
 **Subagents.** The `task` tool runs the same loop with a fresh, empty history, a short prompt of its own, `read`, `find`, `bash` and `web_search`, and a cheaper model (Sonnet 5.5, or Haiku 5.5 when asked). The subagent is told not to change files, and its `bash` calls go through the same approval gate. Only the subagent's final answer returns to the main conversation. Its full transcript is saved next to the parent session as `<id>-sub-<hex>.jsonl`. The point of a subagent is to keep the main context clean. Speed isn't the goal.
 
