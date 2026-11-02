@@ -84,7 +84,7 @@ mini -p "explain this repo in five bullets"   # one prompt, then exit
 
 The first line shows the model and who approves risky actions: `permissions judge` when the OpenRouter key is set, `permissions ask` otherwise.
 
-On Windows without Git for Windows, the `bash` tool falls back to `cmd.exe`; `MINI_BASH` points it to another `bash.exe`. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up.
+On Windows without Git for Windows, the `bash` tool falls back to `cmd.exe`; `MINI_BASH` points it to another `bash.exe`. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up. `MINI_NO_TASK=1` leaves out subagents, so one loop reads and does everything (the `/goal` reviewer still runs); both are set when a session starts.
 
 To work on mini itself: `git clone https://github.com/phuryn/mini-harness && cd mini-harness && uv sync && uv run pytest -q`, then `uv run --project <clone> mini` from any folder.
 

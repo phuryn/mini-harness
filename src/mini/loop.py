@@ -139,15 +139,17 @@ class Agent:
             names = ["read", "find", "bash"] if sub else ["read", "write", "edit", "bash", "find"]
             self.tools = [{"name": x, **SCHEMAS[x]} for x in names]
             if not sub:
-                self.tools += [{"name": x, **s} for x, s in EXTRA_SCHEMAS.items()]
-                if other:  # one model, so subagents run on it too
+                self.tools += [{"name": x, **s} for x, s in EXTRA_SCHEMAS.items()  # MINI_NO_TASK: one loop does it all
+                               if x != "task" or os.environ.get("MINI_NO_TASK") != "1"]
+                if other and "task" in [x["name"] for x in self.tools]:  # one model, so subagents run on it too
                     self.tools[[x["name"] for x in self.tools].index("task")] = {
                         "name": "task", **schema({"prompt": {"type": "string"}}, ["prompt"]),
                         "description": EXTRA_SCHEMAS["task"]["description"]}
                 self.tools += hub.schemas if hub else []
             if os.environ.get("MINI_NO_WEB") != "1":  # e.g. benchmarks that forbid looking things up
                 self.tools.append(WEB_SEARCH)
-            self.system = build_system(cwd, list(skills), hub.errors if hub else [], sub, self.model)
+            self.system = build_system(cwd, list(skills), hub.errors if hub else [], sub, self.model,
+                                       "task" in [x["name"] for x in self.tools])
             session.append("meta", model=self.model, cwd=str(cwd), system=self.system, tools=self.tools)
         self.other = OTHER.get(self.model)  # None for Claude
         self.cfg = cfg = model_config(self.model)

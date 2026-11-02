@@ -1332,6 +1332,16 @@ def test_web_search_can_be_switched_off(ws, monkeypatch):
     assert "web_search" not in [t["name"] for t in agent.tools]
 
 
+def test_subagents_can_be_switched_off_but_the_goal_reviewer_stays(ws, monkeypatch):
+    monkeypatch.setenv("MINI_NO_TASK", "1")
+    agent, _, _ = make(ws, [])
+    assert "task" not in [t["name"] for t in agent.tools] and "`task`" not in agent.system
+    assert "goal_done" in [t["name"] for t in agent.tools]  # the harness, not the model, starts the reviewer
+    monkeypatch.delenv("MINI_NO_TASK")
+    agent, _, _ = make(ws, [])
+    assert "task" in [t["name"] for t in agent.tools] and "`task`" in agent.system
+
+
 @pytest.mark.skipif(os.name != "nt", reason="Windows only")
 def test_windows_aliases_of_protected_files_ask(ws):
     (ws / "sub").mkdir()
