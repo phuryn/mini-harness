@@ -48,7 +48,8 @@ class UI:
             print(self.indent + s)
 
     def tool_call(self, name, args):
-        brief = args.get("command") or args.get("path") or args.get("prompt") or json.dumps(args)[:120]
+        brief = json.dumps(args)[:120] if name == "find" else (
+            args.get("command") or args.get("path") or args.get("prompt") or json.dumps(args)[:120])
         self._say(f"{CYA}→ {name}{OFF} {printable(str(brief).splitlines()[0][:150]) if brief else ''}")
 
     def tool_result(self, out, err):

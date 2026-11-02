@@ -1182,7 +1182,12 @@ def test_find_lists_names_and_greps_contents_without_asking(ws):
     t = LocalTools(str(ws), Approver(interactive=False))  # headless: anything gated would be denied
     assert t.find("*.py").split("\n") == ["blob.py", "src/a.py"]
     assert t.find("*.py", "TIMEOUT") == "src/a.py:2: TIMEOUT = 5"
-    assert t.find(contains=r"TIMEOUT = \d", path="src").split("\n") == ["a.py:2: TIMEOUT = 5", "b.txt:1: TIMEOUT = 9"]
+    assert t.find(contains=r"TIMEOUT = \d", path="src").split("\n") == ["src/a.py:2: TIMEOUT = 5", "src/b.txt:1: TIMEOUT = 9"]
+    assert t.find(contains="TIMEOUT", path="src/b.txt") == "src/b.txt:1: TIMEOUT = 9"  # one file works too
+    with pytest.raises(ToolError, match="No such path"):
+        t.find(path="nope")
+    with pytest.raises(ToolError, match="file names only"):
+        t.find("**/*.py")
     assert t.find("*.md") == "[no matches]"
     with pytest.raises(re.error):
         t.find(contains="(")
@@ -1192,6 +1197,22 @@ def test_find_stops_at_500_results(ws):
     (ws / "big.txt").write_text("hit\n" * 600)
     out = LocalTools(str(ws), Approver(interactive=False)).find(contains="hit")
     assert out.count("\n") == 500 and out.endswith("narrow the search]")
+
+
+def test_find_stops_before_the_output_cap_cuts_the_middle(ws):
+    (ws / "wide.txt").write_text(("hit" + "x" * 290 + "\n") * 400)
+    out = LocalTools(str(ws), Approver(interactive=False)).find(contains="hit")
+    assert len(out) < 30_000 and out.endswith("narrow the search]")
+
+
+def test_find_skips_an_unreadable_file_and_keeps_the_rest(ws):
+    (ws / "locked.txt").write_text("hit\n")
+    (ws / "locked.txt").chmod(0)
+    (ws / "open.txt").write_text("hit\n")
+    try:
+        assert LocalTools(str(ws), Approver(interactive=False)).find(contains="hit") == "open.txt:1: hit"
+    finally:
+        (ws / "locked.txt").chmod(0o644)
 
 
 def test_find_survives_a_broken_symlink(ws):

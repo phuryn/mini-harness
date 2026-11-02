@@ -132,8 +132,9 @@ class Agent:
             if not sub:
                 self.tools += [{"name": x, **s} for x, s in EXTRA_SCHEMAS.items()]
                 if other:  # one model, so subagents run on it too
-                    self.tools[5] = {"name": "task", **schema({"prompt": {"type": "string"}}, ["prompt"]),
-                                     "description": EXTRA_SCHEMAS["task"]["description"]}
+                    self.tools[[x["name"] for x in self.tools].index("task")] = {
+                        "name": "task", **schema({"prompt": {"type": "string"}}, ["prompt"]),
+                        "description": EXTRA_SCHEMAS["task"]["description"]}
                 self.tools += hub.schemas if hub else []
             self.tools.append(WEB_SEARCH)
             self.system = build_system(cwd, list(skills), hub.errors if hub else [], sub)
