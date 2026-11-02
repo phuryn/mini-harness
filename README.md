@@ -1,6 +1,6 @@
 # mini
 
-A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,170 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
+A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,200 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
 
 It has a tool loop, five local tools plus web search, sessions you can resume, compaction, Agent Skills, MCP servers, subagents, a `/goal` mode with an independent reviewer, permission prompts with an optional AI judge, and memory kept in markdown files. It's built to show what a harness actually has to do, and which parts you can leave out.
 
@@ -16,7 +16,7 @@ It has a tool loop, five local tools plus web search, sessions you can resume, c
 
 | Harness | Size | Tools | Sessions | Compaction | Permissions | Subagents | Goal mode | MCP |
 |---|---|---|---|---|---|---|---|---|
-| **mini** | 1,170 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
+| **mini** | 1,200 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
 | mini-swe-agent | ~100-line agent class, Python | terminal only | no | no | runs in a container | no | no | no |
 | nanocode | ~250 lines, one Python file | 6 | no | no | no | no | no | no |
 | Pi | ~1,800-line agent loop; ~190K lines in the repo (TypeScript) | 4 (+3 optional) | yes, branching | yes | no, by design | no, by design | no | yes |
@@ -171,7 +171,7 @@ Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.
 - **Sessions.** One JSONL file per conversation under `~/.mini/sessions/<project>/`. Resuming means reading it back; a crash mid-tool is repaired on resume, by appending.
 - **Every tool call gets an answer**, including failures, denials and interrupts, so the transcript stays valid.
 - **Tools.** `read`, `write`, `edit`, `bash`, `find`, plus `web_search`, `task` (a subagent with a fresh context that returns only its answer), `ask_user` (a question, optionally with numbered options) and `goal_done`. Errors tell the model what to do next.
-- **Permissions.** Reads, searches and edits inside the project run freely. Reading outside the project, or any file that may hold secrets (`.env`, keys, `~/.ssh`, `~/.aws`, credentials files), needs approval, because whatever the model reads goes to the API and into the session file. In judge mode Jev can approve reads outside the project, but secrets and writes to files that run later always ask you. Searches never look inside those files, and `cat`/`head` lose their free pass on such paths. Other bash commands, MCP calls, writes outside the project and writes to files that run later (`.git/`, `Makefile`, `package.json`...) ask first, or go to [Jev](https://www.productcompass.pm/p/jev-decision-model), a small decision model, in `judge` mode. This is a gate, not a sandbox.
+- **Permissions.** Reads, searches and edits inside the project run freely. Reading outside the project, or any file that may hold secrets (`.env`, keys, `~/.ssh`, `~/.aws`, credentials files), needs approval, because whatever the model reads goes to the API and into the session file. In judge mode Jev can approve reads outside the project, but secrets and writes to files that run later always ask you. Searches never look inside those files, and `cat`/`head` lose their free pass on such paths. Read-only git (`status`, `diff`, `log`, `show`) runs without asking. Other bash commands, MCP calls, writes outside the project and writes to files that run later (`.git/`, `Makefile`, `package.json`...) ask first, or go to [Jev](https://www.productcompass.pm/p/jev-decision-model), a small decision model, in `judge` mode. This is a gate, not a sandbox.
 - **`/goal`.** The model keeps working until it calls `goal_done`. The harness then runs `--verify`, and a reviewer subagent with an empty context checks the work. The worker never grades itself.
 - **Cost.** Every request is priced from its token usage with the rates in `models.json` and summed. It isn't shown while you work: `--json` reports it, and `--budget` uses it to stop a long goal run.
 

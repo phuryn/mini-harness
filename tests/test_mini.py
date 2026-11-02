@@ -286,7 +286,8 @@ def test_headless_approver_denies_unlisted_commands(ws):
     assert ap.ok("bash", "ls -la")
     assert ap.ok("bash", "python3 -m pytest -q")
     for bad in ["rm -rf build", "python3 -m pytest; rm -rf /", "ls\nrm -rf x", "find . -delete",
-                "rg --pre /bin/sh x", "git diff --output=x", "git status", "lsof", "python3 -c 1",
+                "rg --pre /bin/sh x", "git diff --output=x", "git show HEAD:.env", "git -C /x log",
+                "git diff --ext-diff", "git push", "lsof", "python3 -c 1",
                 "cat $(whoami)", "echo hi > f"]:
         assert not ap.ok("bash", bad), bad
     assert not ap.ok("write", "/etc/hosts")
@@ -717,6 +718,47 @@ def test_repl_goal_uses_command_line_limits(ws):
     assert agent.goal["verify"] == "false" and agent.goal["status"] == "paused"
 
 
+def test_read_only_git_needs_no_approval(ws):
+    ap = Approver(interactive=False)
+    for good in ["git status", "git diff", "git diff --stat src", "git log --oneline -5", "git show HEAD"]:
+        assert ap.ok("bash", good), good
+
+
+def test_headless_denial_says_why_and_what_to_try(ws):
+    tools = LocalTools(str(ws), Approver(interactive=False))
+    with pytest.raises(ToolError, match="Nobody can approve it in this run.*--allow"):
+        tools.bash("make")
+
+
+def test_edit_error_says_bash_reads_dont_count(ws):
+    (ws / "a.txt").write_text("x")
+    with pytest.raises(ToolError, match="read tool.*bash output"):
+        LocalTools(str(ws), Approver(auto=True)).edit("a.txt", "x", "y")
+
+
+def test_edit_tolerates_mixed_endings_and_trailing_spaces(ws):
+    f = ws / "m.txt"
+    f.write_bytes(b"one\r\n  two  \nthree\r\nfour\n")
+    tools = LocalTools(str(ws), Approver(auto=True))
+    tools.read("m.txt")
+    assert "ignoring" in tools.edit("m.txt", "  two\nthree", "  2\n3")
+    assert f.read_bytes() == b"one\r\n  2\n3\r\nfour\n"
+    tools.edit("m.txt", "  2 \n3", "")  # deleting whole lines leaves no blank line
+    assert f.read_bytes() == b"one\r\nfour\n"
+
+
+def test_edit_miss_points_at_the_closest_line_and_loose_ties_refuse(ws):
+    f = ws / "c.py"
+    f.write_text("def run(x):\n    return x\n\npad \npad\n")
+    tools = LocalTools(str(ws), Approver(auto=True))
+    tools.read("c.py")
+    with pytest.raises(ToolError, match="Closest: line 1"):
+        tools.edit("c.py", "def run(y):", "z")
+    with pytest.raises(ToolError, match="2 places"):
+        tools.edit("c.py", "pad  ", "q")
+    assert f.read_text() == "def run(x):\n    return x\n\npad \npad\n"
+
+
 def test_edit_keeps_windows_line_endings(ws):
     f = ws / "w.txt"
     f.write_bytes(b"a\r\nb\r\nc\r\n")
@@ -939,7 +981,7 @@ def test_permissions_switch(ws, monkeypatch):
         agent.local.bash("echo b; true")
     command(agent, "/permissions ask", None)
     monkeypatch.setattr("builtins.input", lambda _: "n")
-    with pytest.raises(ToolError, match="User denied this command.$"):
+    with pytest.raises(ToolError, match="User denied this command. Nobody"):
         agent.local.bash("echo c; true")
 
 
@@ -1010,7 +1052,7 @@ def test_ask_user_answer_reaches_the_judge(ws, monkeypatch):
 
 def test_ordinary_commands_reach_the_judge(ws, monkeypatch):
     agent, sent = judged(ws, monkeypatch, verdict="allow")
-    for cmd in ["git diff HEAD", "uv run pytest -q 2>&1 | head -40", "sleep .5; true"]:
+    for cmd in ["git branch", "uv run pytest -q 2>&1 | head -40", "sleep .5; true"]:
         agent.local.bash(cmd)
     assert len(sent) == 3
 

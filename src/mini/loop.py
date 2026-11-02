@@ -85,7 +85,8 @@ EXTRA_SCHEMAS = {
                   "options": {"type": "array", "items": {"type": "string"}, "description": "Choices, if any"}},
                  ["question"])},
     "goal_done": {
-        "description": "Declare the active goal complete. Only call it when the goal is fully met and you have "
+        "description": "Declare the active goal complete. Only for a goal the user set with /goal: without one, don't "
+                       "call it. Only call it when the goal is fully met and you have "
                        "checked it. The harness then runs the user's verify command, if any, and has a reviewer "
                        "that can't see this conversation check the work; you get their objections if they disagree.",
         **schema({"evidence": {"type": "string", "description": "What you ran and what it showed"}}, ["evidence"])},

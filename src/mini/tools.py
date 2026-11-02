@@ -4,6 +4,7 @@ A tool is a JSON schema the model sees and a Python function the harness runs.
 `edit` refuses to touch a file that changed since the model last read it.
 """
 import contextlib
+import difflib
 import fnmatch
 import os
 import re
@@ -71,12 +72,40 @@ def truncate(text: str) -> str:
     return text if len(text) <= MAX_OUT else f"{text[:h]}\n\n[... {len(text) - MAX_OUT} characters cut ...]\n\n{text[-h:]}"
 
 
+def loose_edit(text: str, old: str, new: str) -> tuple[str | None, int]:
+    """Retry whole lines, ignoring line endings and trailing whitespace: models copy those wrong, mostly on Windows.
+    Returns the edited text if exactly one place matches, and how many places did."""
+    lines = text.splitlines(keepends=True)
+    want = [x.rstrip() for x in old.replace("\r\n", "\n").rstrip("\n").split("\n")]
+    if not any(want):
+        return None, 0
+    hits = [i for i in range(len(lines) - len(want) + 1) if [x.rstrip() for x in lines[i:i + len(want)]] == want]
+    if len(hits) != 1:
+        return None, len(hits)
+    i, j = hits[0], hits[0] + len(want)
+    eol = "\r\n" if lines[i].endswith("\r\n") else "\n"
+    end = lines[j - 1][len(lines[j - 1].rstrip("\r\n")):]  # the last line keeps its own ending, if it had one
+    body = eol.join(new.replace("\r\n", "\n").rstrip("\n").split("\n")) + end if new else ""
+    return "".join(lines[:i]) + body + "".join(lines[j:]), 1
+
+
+def closest(text: str, old: str) -> str:
+    """Point at the line most like old's first line, so the model sees what differs instead of guessing."""
+    first = next((x.strip() for x in old.split("\n") if x.strip()), "")
+    lines = [x.strip() for x in text.splitlines()]
+    best = difflib.get_close_matches(first, lines, n=1, cutoff=0.6)
+    return f" Closest: line {lines.index(best[0]) + 1}: {best[0]!r}" if best else ""
+
+
 class Approver:
     """Asks before risky calls. `auto=True` approves everything (--permissions yes)."""
 
     # Commands that can't run other programs or write files, whatever their flags.
     # grep isn't here: `grep -r` reads every file, secrets included. The find tool searches without a shell.
     SAFE = {"ls", "cat", "head", "tail", "wc", "pwd", "echo", "which", "stat", "diff"}
+    # Read-only git. It runs only what git config says, and writes into .git need approval; `--output` writes,
+    # and a `rev:path` word could show a committed secret, so those go to review.
+    GIT = {"status", "diff", "log", "show"}
     SHELL = set(";&|<>`$(){}\n\r\\")
 
     def __init__(self, auto: bool = False, interactive: bool = True, allow: tuple = (), use_judge: bool = False):
@@ -91,7 +120,10 @@ class Approver:
             words = shlex.split(command)
         except ValueError:
             return False
-        return bool(words) and ((words[0] in self.SAFE and not private) or any(words[:len(a)] == a for a in self.allow))
+        git = words[:1] == ["git"] and words[1:2] and words[1] in self.GIT and not any(
+            w.startswith(("--output", "--ext-diff", "--textconv")) or ":" in w for w in words)
+        return bool(words) and (((words[0] in self.SAFE or git) and not private)
+                                or any(words[:len(a)] == a for a in self.allow))
 
     def ok(self, kind: str, detail: str, private=False, secret=False) -> bool:
         if self.auto or (kind == "bash" and self.pre_approved(detail, private)):
@@ -108,6 +140,8 @@ class Approver:
             if verdict != "ask":
                 return verdict == "allow"
         if not self.interactive:
+            self.reason += (" Nobody can approve it in this run, so it was denied: try a smaller step, stay inside "
+                            "the project, or ask the user to rerun with --allow.")
             return False
         # Every row carries a marker content can't fake, and nothing taller than a screen is shown at all.
         cols = max(shutil.get_terminal_size().columns - 6, 20)
@@ -222,7 +256,7 @@ class LocalTools:
     def edit(self, path: str, old: str, new: str, replace_all: bool = False) -> str:
         p = self._path(path)
         if p not in self.seen:
-            raise ToolError("Read the file before editing it.")
+            raise ToolError("Read the file with the read tool before editing it (bash output doesn't count).")
         if p.stat().st_mtime != self.seen[p]:
             raise ToolError("File changed since you last read it. Read it again.")
         if self._ask(p) and not self.approver.ok("write", "\n".join(
@@ -237,7 +271,13 @@ class LocalTools:
             new = new.replace("\r\n", "\n").replace("\n", "\r\n")
         n = text.count(old)
         if n == 0:
-            raise ToolError("`old` not found. It must match the file exactly, including whitespace.")
+            done, hits = loose_edit(text, old, new)
+            if done is not None:
+                p.write_text(done, newline="", encoding="utf-8")
+                self.seen[p] = p.stat().st_mtime
+                return f"Edited {p} (1 replaced, ignoring line endings and trailing whitespace)"
+            raise ToolError(f"`old` matches {hits} places once whitespace is ignored. Add context." if hits else
+                            "`old` not found. It must match the file exactly, including whitespace." + closest(text, old))
         if n > 1 and not replace_all:
             raise ToolError(f"`old` appears {n} times. Add context to make it unique, or set replace_all.")
         p.write_text(text.replace(old, new) if replace_all else text.replace(old, new, 1), newline="", encoding="utf-8")
