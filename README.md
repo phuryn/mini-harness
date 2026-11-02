@@ -48,8 +48,8 @@ Ctrl-C stops the current turn and keeps the session valid.
 
 | File | Lines | Job |
 |---|---|---|
-| `loop.py` | 455 | Model calls, tool dispatch, subagents, compaction, `/goal`, the judge, providers, cost |
-| `cli.py` | 195 | REPL, slash commands, headless mode |
+| `loop.py` | 453 | Model calls, tool dispatch, subagents, compaction, `/goal`, the judge, providers, cost |
+| `cli.py` | 196 | REPL, slash commands, headless mode |
 | `tools.py` | 223 | read, write, edit, bash, find, approval gate |
 | `ext.py` | 87 | Skills discovery, MCP stdio hub |
 | `session.py` | 67 | JSONL session files |
