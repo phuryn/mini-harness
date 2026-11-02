@@ -1,32 +1,43 @@
 # mini
 
-A minimal agent harness for Claude (and DeepSeek), small enough to read in one sitting. It has a tool loop, five local tools, sessions you can resume, compaction, skills, MCP servers, subagents, a `/goal` mode, a permission judge, and memory kept in markdown files. It has no UI framework, no plugin system and no dependencies beyond `anthropic` and `mcp`.
+A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,075 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
 
-It's built to show what a harness actually has to do, and which parts you can leave out.
+It has a tool loop, five local tools plus web search, sessions you can resume, compaction, Agent Skills, MCP servers, subagents, a `/goal` mode with an independent reviewer, permission prompts with an optional AI judge, and memory kept in markdown files. It's built to show what a harness actually has to do, and which parts you can leave out.
+
+## How it compares
+
+| Harness | Size | Tools | Sessions | Compaction | Permissions | Subagents | Goal mode | MCP |
+|---|---|---|---|---|---|---|---|---|
+| **mini** | 1,075 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
+| mini-swe-agent | ~100-line agent class, Python | terminal only | no | no | runs in a container | no | no | no |
+| nanocode | ~250 lines, one Python file | 6 | no | no | no | no | no | no |
+| Pi | ~1,800-line agent loop; ~190K lines in the repo (TypeScript) | 4 (+3 optional) | yes, branching | yes | no, by design | no, by design | no | yes |
+| Claude Code, Codex CLI | full products | many | yes | yes | yes | yes | yes | yes |
+
+As of November 2026. Pi is built to be extended; mini is built to be read. Smaller harnesses do real work, but none of the ones above covers crash recovery, an append-only transcript, permissions and checked goals together.
 
 ## Quick start
 
 ```bash
-git clone <this repo> ~/mini && cd ~/mini && uv sync
+git clone git@github.com:phuryn/mini-harness.git ~/mini && cd ~/mini && uv sync
 export ANTHROPIC_API_KEY=sk-ant-...
 cd ~/some/project
 uv run --project ~/mini mini                 # interactive
 uv run --project ~/mini mini -p "explain this repo in five bullets"
 ```
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Optional keys: `DEEPSEEK_API_KEY` (DeepSeek), `OPENROUTER_API_KEY` (the permission judge).
 
-## Talking to it
+## Using it
 
 | Command | What it does |
 |---|---|
 | `/new [model]` | Start a fresh session, on another model if given |
 | `/effort [level]` | Show or change the effort for the next requests |
 | `/permissions [mode]` | `ask`, `judge` or `yes`: who approves risky calls |
-| `/sessions` | List recent sessions in this directory |
-| `/resume [id]` | Resume the latest session, or one by id prefix |
+| `/sessions`, `/resume [id]` | List sessions in this directory; resume the latest or one by id prefix |
 | `/compact` | Replace the history with a summary now |
-| `/dream` | Review `memory/`: merge duplicates, drop what's stale, keep the index accurate |
+| `/dream` | Tidy `memory/`: merge duplicates, drop what's stale |
 | `/goal <objective>` | Keep working until the objective is done; also `resume`, `clear`, `status` |
 | `/exit` | Quit. Every message is already saved |
 
@@ -34,87 +45,71 @@ Ctrl-C stops the current turn and keeps the session valid.
 
 | Flag | What it does |
 |---|---|
-| `-p "..."` | Run one prompt headless and print the answer |
+| `-p "..."` | Run one prompt headless and print the answer (`--json` for one JSON line with status and cost) |
 | `-c` / `-r <id>` | Continue the latest session, or resume one |
-| `--goal "..." --verify "pytest -q"` | Headless goal mode. The goal only counts as done when the verify command passes |
-| `--max-turns N`, `--budget 2.50` | Limits for goal mode (turns, dollars) |
-| `--allow "python3 -m pytest"` | Pre-approve bash commands that start with these words, or MCP tools whose name starts with this prefix (repeatable). Headless mode denies everything else |
-| `--permissions ask\|judge\|yes` | Who approves risky calls: you (headless denies), the Jev judge, or nobody (`yes`, only in a sandbox) |
-| `--model`, `--effort` | Main model (default `claude-opus-5-5`, or `deepseek-flash`) and effort (default `high`) |
-| `--models` | List the models your key can use, then exit |
-| `--json` | Headless: print one JSON line with status, cost and answer |
+| `--model`, `--effort` | Model (default `claude-opus-5-5`) and effort (default `high`); `--models` lists what your keys can use |
+| `--allow "python3 -m pytest"` | Pre-approve bash commands starting with these words, or MCP tools starting with this prefix (repeatable). Headless mode denies everything else |
+| `--permissions ask\|judge\|yes` | Who approves risky calls: you, the Jev judge, or nobody (`yes`: only in a sandbox) |
+| `--goal "..." --verify "pytest -q"` | Headless goal mode; done only when the verify command passes and a fresh reviewer agrees |
+| `--max-turns N`, `--budget 2.50` | Limits for goal mode |
 
-## What's in it
+**Project files it reads.** `AGENTS.md` (instructions), `memory/INDEX.md` (memory, which the model keeps up to date), skills in `skills/`, `.claude/skills/` or `.agents/skills/` (plus `~/.mini/skills/`), and MCP servers in `mcp.json` or `.mcp.json` (plus `~/.mini/mcp.json`). Skills and MCP use the same formats as Claude Code, so existing ones work as they are. Only each skill's name and description go into the prompt; the model reads the full `SKILL.md` when a task matches.
 
-| File | Lines | Job |
-|---|---|---|
-| `loop.py` | 461 | Model calls, tool dispatch, subagents, compaction, `/goal` and its reviewer, the judge, providers, cost |
-| `tools.py` | 223 | read, write, edit, bash, find, approval gate |
-| `cli.py` | 198 | REPL, slash commands, headless mode |
-| `ext.py` | 98 | Skills discovery, MCP stdio hub |
-| `session.py` | 67 | JSONL session files |
-| `context.py` | 26 | The frozen system prompt |
+**MCP.** Servers run over stdio, as any command:
 
-That's 1,075 lines of code (not counting blank lines, comments or docstrings), and about 160 of them are prompts, tool descriptions and schemas. It was 999 before the `find` tool, which was worth going over the 1,000-line target for.
+```json
+{"mcpServers": {
+  "github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]},
+  "linear": {"command": "npx", "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"]}
+}}
+```
+
+Hosted servers with OAuth go through `mcp-remote`, which runs the login in your browser once and keeps the token. Tested with Linear. Every MCP call asks first unless `--allow` covers it (e.g. `--allow mcp__linear__list_` for Linear's read-only list tools).
+
+## Adding a model
+
+**A new Claude model** works by name: `--model claude-<name>`. Add its prices (in $ per million tokens: input, output, cache read, cache write) to `PRICES` in `src/mini/loop.py`, or the cost shown falls back to Opus 5.5 rates. Claude models get everything: adaptive thinking, server-side compaction, fallbacks on refusals (not on Haiku), and $0.01 web search. The context window is taken as 1M tokens; compaction starts at 150K (`MINI_COMPACT_AT` changes it).
+
+**Any other model** must serve Anthropic's Messages format (DeepSeek, Kimi, GLM and others offer such an endpoint). Add it to `~/.mini/models.json`:
+
+```json
+{"my-model": {
+  "base_url": "https://example.com/anthropic",
+  "key": "MY_API_KEY",
+  "window": 262144,
+  "compact_at": 150000,
+  "search": 0,
+  "efforts": ["low", "high"],
+  "prices": [0.5, 2, 0.05, 0.5]
+}}
+```
+
+| Field | Meaning |
+|---|---|
+| `base_url` | The provider's Anthropic-format endpoint |
+| `key` | Name of the environment variable that holds the key (never the key itself) |
+| `window` | Context window in tokens (shown in the status line) |
+| `compact_at` | Input tokens at which mini summarizes the conversation; keep it well below `window` |
+| `search` | $ per web search, for the cost display |
+| `efforts` | Effort levels the provider accepts |
+| `prices` | $ per million tokens: input, output, cache read, cache write |
+
+Then run `mini --model my-model`. What changes for a non-Claude model: no thinking-block binding, betas or fallbacks are sent, compaction is done by mini itself (it asks the model for a summary) instead of the server, and subagents run on the same model. DeepSeek V4.1 Flash is built in as `deepseek-flash`. OpenAI-format endpoints aren't supported; they'd need a translation layer for messages, tools and thinking.
 
 ## How it works
 
-**The loop.** Send the conversation, stream the reply, run any tools the model asked for, send the results back, and repeat until the model stops asking. All the hard parts are bookkeeping around that loop.
-
-**The transcript is append-only.** On current Claude models a thinking block's signature is bound to everything sent before it: the system prompt, the tool list, and every earlier message. If you edit any of that and send the block back, newer accounts get a 400 error, and older ones lose the reasoning silently. So mini never edits history:
-
-- The system prompt and tool list are built once, when the session starts. They are stored in the session file and replayed byte for byte on resume, even if `AGENTS.md` has changed since.
-- Instructions that arrive later (a goal, clearing a goal) are appended as `{"role": "system"}` messages.
-- Every conversation request sets `prefix_mismatch_behavior: "drop_block"`. If something ever does break the rule, the API drops the affected thinking instead of failing, reports it in `input_transformations`, and mini logs and prints a warning.
-
-**Sessions.** Each conversation is one JSONL file under `~/.mini/sessions/<project>/`. Each line is an event: `meta` (model, frozen prompt, tools), `msg`, `usage`, `compact`, `goal` or `transform` (thinking blocks the API dropped). A line cut off by a crash is skipped. Resuming means reading the file. Nothing in it is ever rewritten.
-
-**Compaction.** When the context passes 150K tokens (checked before each prompt and after each round of tool results, so a long tool loop can't outgrow the window), or when you run `/compact`, mini asks the API for a summary using [on-demand compaction](https://platform.claude.com/docs/en/build-with-claude/compaction-on-demand). The returned block replaces the whole history, and a `compact` event starts a new segment in the session file, so older turns stay on disk. Two common shapes break thinking blocks and are avoided here: summarizing old turns while keeping recent ones verbatim, and compacting in the background. Server-side summarization also beats a client-side summary prompt here, because the server's summarizer can read the earlier thinking, and no summarization code ships with the harness.
-
-**Every tool call gets an answer.** Failures, denials, interrupts and calls cut off by `max_tokens` all return a `tool_result` with `is_error: true`. Parallel calls are answered in one message. If an API call fails or you press Ctrl-C mid-stream, a short placeholder reply is appended so the transcript stays valid. A reply that pauses on a server tool (web search) is held back and committed only together with the reply that completes it, so a failure in between leaves no half-finished search in the history. A session that died mid-tool (closed terminal, crash) is repaired on resume, again only by appending.
-
-**Fallbacks.** Requests to Opus and Sonnet set `fallbacks: "default"`. If the model declines a request partway through, the API continues on another model in the same response. mini then runs only the tool calls that come after the `fallback` marker, and drops the declined model's unpaired calls and thinking, as Anthropic's guide says. Cost is computed for each model separately.
-
-**Tools.** `read`, `write`, `edit`, `bash` and `find`, plus server-side `web_search`. Every request sends each tool's name, description and schema. The descriptions warn about the usual mistakes: copying `read`'s line-number prefix into `edit`, editing a file without reading it first, an `old` string that isn't unique, interactive commands, and a subagent that can't see the conversation. mini's own tools set `strict: true`, so the API guarantees their arguments have the right shape and types; the code clamps numeric values. `read` pages long files before the 30,000-character output cap, and tells the model which offset comes next. When a call still fails, the error says what to do next ("Read the file before editing it", "`old` appears 3 times, add context"), so the model fixes it on the next step. `edit` refuses to change a file that was modified since the model last read it, keeps Windows line endings, and `write` won't overwrite a file the model hasn't read. `read` refuses special files and files over 5 MB. `find` searches file names (a glob) and, with a regex, file contents, returning `path:line: text`. It is plain Python with no shell, so it never asks for approval; paths come back relative to the working directory. It skips dot-folders, `node_modules`, `__pycache__` and symlinked folders, skips binary files and files it can't read when searching contents, and stops at 500 results, 30,000 characters or 30 seconds. Git and tests go through `bash`.
-
-**Approvals.** A short list of commands that can't run programs or write files (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `diff` and a few more) runs without asking, as long as it contains no shell operators or newlines. `find`, `rg` and `git` aren't on the list, because flags such as `-exec`, `--pre` and `--output` can run programs or write files. Any other bash command asks first. So does any write outside the working directory (every write, if you start mini in your home folder), and any write to a file that something else will run later: dot-folders such as `.git/` (git config can make `git status` run commands), `mcp.json`, `conftest.py`, `Makefile`, `package.json`, `pyproject.toml`, `setup.py`, any existing executable file, `GNUmakefile`, `justfile`, `tox.ini`, `noxfile.py`, and files named `HEAD` or `config`, because git treats any folder with those plus `objects/` and `refs/` as a repository. That list is a denylist of common runners, not a guarantee. The approval prompt starts with a soft terminal reset, shows the action in rows that each start with a `│` marker (so file content can't imitate the prompt), and repeats the path (for a write) or the kind of call, plus the row count, next to the answer. Inside it, everything outside plain ASCII is escaped, a backslash included, and runs of 3+ spaces in a command (16+ in file content) or of blank lines are shown as counts. An action taller than the screen (at most 40 rows) is denied as too long to review; a long write to a protected file has to start short and grow with `edit`, or run under `/permissions yes`. Approvals are one at a time. `--allow` pre-approves bash commands and MCP tools by prefix; `/permissions` switches who approves everything. The model's own streamed text, thinking, warnings, goal notes and questions have terminal control codes stripped, and MCP servers' own output goes to a log file, so nothing can change how the next prompt is drawn. The judge receives the action as one quoted string, and anything too long to review (over 4,000 characters) is denied. The check ignores case, because macOS file systems do. Every MCP tool call asks first. Headless mode denies anything not matched by `--allow`, which compares whole words, so `--allow "python3 -m pytest"` doesn't approve `python3 -c ...`. Writes elsewhere in the project are free, so allowing a test runner means the model can run code it wrote. `read` isn't restricted to the project either. This gate is not a sandbox.
-
-**Memory and instructions.** At session start mini loads `AGENTS.md` (and only that file) plus `memory/INDEX.md`, which routes to area files such as `memory/decisions.md`. The model reads area files when a task touches them and updates them with `edit`, merging a new fact into what's there instead of appending, so the files stay short. `/dream` asks for a full review of `memory/` on demand. Changes take effect in the next session, because the prompt is frozen within a session.
-
-**Skills.** mini reads [Agent Skills](https://agentskills.io): a folder with a `SKILL.md` that starts with a YAML header (`name`, `description`, folded multi-line values included). It looks in `skills/`, `.claude/skills/` and `.agents/skills/` in the project, and in `~/.mini/skills/`, so a project's Claude Code or Codex skills work as they are. Only each skill's name and description (the frontmatter) are injected into the system prompt, as one line per skill. When a task matches, the model reads the full `SKILL.md` with `read`, and any files it points to. No special tool is needed, and an unused skill costs one line. In a live test, Haiku, DeepSeek and Opus each read the matching skill before starting, ignored an unrelated one, and followed its house style; on an unrelated task none read a skill.
-
-**MCP.** List stdio servers in `mcp.json` or `.mcp.json` (the same `mcpServers` format Claude Code and Claude Desktop use) in the project directory, or in `~/.mini/mcp.json`. A server is any command: `npx`, `uvx`, `docker` or a local binary.
-
-```json
-{"mcpServers": {"github": {"command": "npx", "args": ["-y", "@modelcontextprotocol/server-github"]}}}
-```
-
-Their tools appear as `mcp__<server>__<tool>`, and each call asks for approval unless `--allow` covers it. A server that fails to start, or an `mcp.json` that isn't valid JSON, is reported and skipped. Remote servers (`"url"` entries) and OAuth aren't built in; a remote server can be bridged as a stdio command with `npx -y mcp-remote <url>`, which runs the OAuth login in your browser and keeps the token. Tested live against Linear's hosted server (`"command": "npx", "args": ["-y", "mcp-remote", "https://mcp.linear.app/mcp"]`): after a one-time login, Haiku listed the teams and latest issues with only `--allow mcp__linear__list_` pre-approved, for $0.007. Linear brings about 80 tools, so their manuals take a big share of the 49K-token context that run used.
-
-**Subagents.** The `task` tool runs the same loop with a fresh, empty history, a short prompt of its own, `read`, `find`, `bash` and `web_search`, and a cheaper model (Sonnet 5.5, or Haiku 5.5 when asked). The subagent is told not to change files, and its `bash` calls go through the same approval gate. Only the subagent's final answer returns to the main conversation. Its full transcript is saved next to the parent session as `<id>-sub-<hex>.jsonl`. The point of a subagent is to keep the main context clean. Speed isn't the goal.
-
-**`/goal`.** This sets an objective and keeps the model going. After each turn the harness either sends "continue", or, if the model called `goal_done`, checks the claim without trusting it: it runs the `--verify` command, if any, and then has a reviewer subagent with an empty context (the same machinery as `task`) inspect the working directory against the objective and the model's evidence. The goal counts as done only when the reviewer ends with `VERDICT: DONE`. A failed check or the reviewer's objections go back to the model. The loop also stops when the model writes `BLOCKED:` because it needs you, at the turn limit, at the budget, or on Ctrl-C. Goal state is saved in the session, so `/resume` followed by `/goal resume` picks it back up. When a goal stops, the model is told that goal mode is off, even across a restart. `--verify` runs in your shell, so a verify command that runs the project's tests also runs code the model wrote.
-
-**Models and providers.** `--model` (or `/new <model>`) picks the model for a session, and `mini --models` lists what your key can use. The model stays fixed for the whole session, because a switch would drop the replayed thinking. Effort can change at any time with `/effort`: it's a setting on each request, not part of the history. Each provider has its own levels (Claude: low to max; DeepSeek: low, high, max).
-
-DeepSeek V4.1 Flash (`--model deepseek-flash`, key in `DEEPSEEK_API_KEY`) runs through DeepSeek's Anthropic-format endpoint, so the loop, tools, sessions and web search are the same code. What it lacks is Anthropic's server-side compaction and fallbacks. For DeepSeek, mini compacts on its own: it asks the model for a summary and starts a new segment from it. Subagents run on the same model. Any other endpoint that speaks Anthropic's format can go in `~/.mini/models.json`, with its context window and compaction threshold:
-
-```json
-{"my-model": {"base_url": "https://example.com/anthropic", "key": "MY_API_KEY", "window": 262144,
-              "compact_at": 150000, "search": 0, "efforts": ["low", "high"], "prices": [0.5, 2, 0.05, 0.5]}}
-```
-
-Keys stay in environment variables, never on the command line, where shell history and `ps` would keep them. A model whose key is missing refuses to start, and so does any non-Anthropic model while `ANTHROPIC_CUSTOM_HEADERS` is set, so nothing meant for Anthropic is sent to another endpoint. An OpenAI-format endpoint would need a translation layer for messages, tools and thinking, which is more code than the rest of this file.
-
-**The permission judge.** With `--permissions judge` (or `/permissions judge`), a risky call goes to [Jev](https://www.productcompass.pm/p/jev-decision-model), a decision model on OpenRouter, before it would reach you. Jev answers allow or deny with a confidence. Below 0.8 the call asks you, and in headless mode it's denied. If Jev can't be reached, the call is denied. A denial goes back to the model with the reason, so it can change course. Jev sees your own messages, your answers to `ask_user` (not the model's questions), the active goal, and the whole action, nothing else: not the model's reasoning, not tool output, and not messages the harness writes, such as test output from `--verify`, because those can carry instructions aimed at whoever reads them. An action too long to review (over 4,000 characters) is denied before Jev sees it. Writes through the write and edit tools that need approval (outside the project, or files that run later) always go to you, never to Jev. Bash commands go to Jev, including ones that write files: its instructions say to deny writes to files that run later, but that is a model's judgment, and a command can write a file without naming it (a patch, a script). Use `ask` mode when that matters. A check costs about $0.00002. It's still a model judging a model, not a sandbox.
-
-**Asking you.** The `ask_user` tool lets the model ask a question mid-task, open-ended or with numbered options; you type a number or your own answer. In headless runs nobody answers, so the model is told to make its best assumption and say what it assumed.
-
-**Cost.** Each turn prints the running total, using the cache-read rates. Cache hits come from one top-level `cache_control` marker. Because the prefix never changes, the cache stays warm.
+- **The loop.** Send the conversation, stream the reply, run the tools the model asked for, send the results back, repeat until it stops asking. The rest is bookkeeping around that loop.
+- **Append-only transcript.** The system prompt and tool list are frozen at session start; nothing already sent is ever edited. Current Claude models bind thinking blocks to everything before them, so an edit would break the conversation. Later instructions are appended as system messages.
+- **Sessions.** One JSONL file per conversation under `~/.mini/sessions/<project>/`. Resuming means reading it back; a crash mid-tool is repaired on resume, by appending.
+- **Every tool call gets an answer**, including failures, denials and interrupts, so the transcript stays valid.
+- **Tools.** `read`, `write`, `edit`, `bash`, `find`, plus `web_search`, `task` (a subagent with a fresh context that returns only its answer), `ask_user` (a question, optionally with numbered options) and `goal_done`. Errors tell the model what to do next.
+- **Permissions.** Read-only commands and edits inside the project run freely. Other bash commands, MCP calls, writes outside the project and writes to files that run later (`.git/`, `Makefile`, `package.json`...) ask first, or go to [Jev](https://www.productcompass.pm/p/jev-decision-model), a small decision model, in `judge` mode. This is a gate, not a sandbox.
+- **`/goal`.** The model keeps working until it calls `goal_done`. The harness then runs `--verify`, and a reviewer subagent with an empty context checks the work. The worker never grades itself.
+- **Cost.** Every request is priced from its token usage and summed; the running total shows after each turn.
 
 ## Left out on purpose
 
-A TUI, hooks, plugins, a sandbox, worktrees, checkpoints (use git), OpenAI-format providers, non-blocking subagents, tool search, model switching mid-session, streaming tool input, and ACP editor integration. Each one is a reasonable next step, and none is needed for the harness to do real work.
+A full-screen UI, hooks, plugins, a sandbox, checkpoints (use git), forked or parallel subagents, OpenAI-format providers, switching models mid-session, and editor integration.
 
 ## Tests
 
@@ -122,4 +117,4 @@ A TUI, hooks, plugins, a sandbox, worktrees, checkpoints (use git), OpenAI-forma
 uv run pytest -q
 ```
 
-The tests run offline against a scripted fake client and check the invariants above: append-only requests, a result for every tool call, resume replaying the frozen prompt, the compaction swap, interrupt recovery, the goal state machine, subagent isolation, plus a real MCP server over stdio.
+129 offline tests against a scripted fake client and a real MCP stdio server. They check the invariants above: append-only requests, an answer for every tool call, resume, compaction, interrupts, goal mode, subagent isolation. `AGENTS.md` has the rules for changing the code.
