@@ -4,6 +4,14 @@ A minimal agent harness for Claude (and other models that speak Anthropic's mess
 
 It has a tool loop, five local tools plus web search, sessions you can resume, compaction, Agent Skills, MCP servers, subagents, a `/goal` mode with an independent reviewer, permission prompts with an optional AI judge, and memory kept in markdown files. It's built to show what a harness actually has to do, and which parts you can leave out.
 
+## What's different
+
+- **Built to be read.** One small folder, with no framework and no plugin system. Every part exists because something specific broke without it.
+- **The worker never grades itself.** In `/goal` mode, a claimed "done" counts only after the verify command passes and a reviewer with a fresh context checks the work.
+- **Permissions with an AI judge.** Risky actions ask you, or go to a small decision model that answers in about 0.3 seconds for a fraction of a cent.
+- **Never edits what it already sent.** The conversation is append-only, which keeps Claude's thinking valid and the cache warm across long sessions, resumes and compaction.
+- **Uses existing formats.** Skills and MCP servers set up for Claude Code work as they are, and hosted OAuth servers like Linear connect through `mcp-remote`.
+
 ## How it compares
 
 | Harness | Size | Tools | Sessions | Compaction | Permissions | Subagents | Goal mode | MCP |
