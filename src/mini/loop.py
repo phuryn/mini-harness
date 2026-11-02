@@ -382,7 +382,8 @@ class Agent:
     def run_subagent(self, prompt, model=None):
         path = self.session.path.with_name(f"{self.session.id}-sub-{secrets.token_hex(3)}.jsonl")
         model = self.model if self.other else model
-        child = Agent(self.cwd, Session(path), self.ui.child(), self.approver, model=model, effort="medium", sub=True,
+        child = Agent(self.cwd, Session(path), self.ui.child(), self.approver, model=model, sub=True,
+                      effort="medium" if "medium" in self.efforts else self.effort,  # no medium: work at the lead's level
                       client=self.client)
         stop = child.turn(prompt)
         self.cost += child.cost

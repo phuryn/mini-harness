@@ -812,7 +812,7 @@ def test_deepseek_request_drops_claude_only_fields(ws):
     main, child = client.requests[0], client.requests[1]
     for kw in (main, child):
         assert kw["model"] == "deepseek-flash" and "thinking" not in kw and "betas" not in kw and "fallbacks" not in kw
-    assert child["output_config"] == {"effort": "low"}  # subagents' "medium" isn't a DeepSeek level
+    assert child["output_config"] == {"effort": "high"}  # no medium on DeepSeek: helpers work at the lead's level
     task = next(x for x in main["tools"] if x["name"] == "task")
     assert list(task["input_schema"]["properties"]) == ["prompt"]  # one model, nothing to choose
     assert_append_only([client.requests[0], client.requests[2]])
