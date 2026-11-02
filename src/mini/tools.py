@@ -75,7 +75,8 @@ class Approver:
     """Asks before risky calls. `auto=True` approves everything (--permissions yes)."""
 
     # Commands that can't run other programs or write files, whatever their flags.
-    SAFE = {"ls", "cat", "head", "tail", "wc", "pwd", "grep", "echo", "which", "stat", "diff"}
+    # grep isn't here: `grep -r` reads every file, secrets included. The find tool searches without a shell.
+    SAFE = {"ls", "cat", "head", "tail", "wc", "pwd", "echo", "which", "stat", "diff"}
     SHELL = set(";&|<>`$(){}\n\r\\")
 
     def __init__(self, auto: bool = False, interactive: bool = True, allow: tuple = (), use_judge: bool = False):
@@ -83,17 +84,17 @@ class Approver:
         self.use_judge, self.judge, self.reason = use_judge, None, ""  # judge(kind, detail) -> (allow|deny|ask, why)
         self.allow = [shlex.split(a) for a in allow if a.strip()]
 
-    def pre_approved(self, command: str) -> bool:
+    def pre_approved(self, command: str, private=False) -> bool:
         if self.SHELL & set(command):
             return False
         try:
             words = shlex.split(command)
         except ValueError:
             return False
-        return bool(words) and (words[0] in self.SAFE or any(words[:len(a)] == a for a in self.allow))
+        return bool(words) and ((words[0] in self.SAFE and not private) or any(words[:len(a)] == a for a in self.allow))
 
-    def ok(self, kind: str, detail: str) -> bool:
-        if self.auto or (kind == "bash" and self.pre_approved(detail)):
+    def ok(self, kind: str, detail: str, private=False) -> bool:
+        if self.auto or (kind == "bash" and self.pre_approved(detail, private)):
             return True
         if kind == "mcp" and any(detail.split()[0].startswith(a[0]) for a in self.allow):
             return True
@@ -148,6 +149,26 @@ class LocalTools:
             return False
         return not any(x.startswith(".") for x in parts) and parts[-1] not in self.PROTECTED
 
+    # Files that usually hold keys or passwords, and folders of them. Templates (.env.example) are fine.
+    SECRET = re.compile(r"^\.env(?!\.(example|sample|template)$)|\.(pem|key|p12|pfx|jks|keystore)$|^id_(rsa|dsa|ecdsa|ed25519)"
+                        r"|^(\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials(\.json)?|secrets?\.(json|ya?ml|toml))$")
+    SECRET_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", "gcloud"}
+
+    def _private(self, path: Path) -> bool:
+        """Reading asks first outside the working directory, and for files that may hold secrets anywhere:
+        whatever the model reads goes to the API and into the session file."""
+        parts = [x.casefold() for x in path.parts]
+        return (self.cwd != path and self.cwd not in path.parents) or bool(
+            self.SECRET_DIRS.intersection(parts) or self.SECRET.search(parts[-1] if parts else ""))
+
+    def _names_private(self, command: str) -> bool:
+        """Does a command name a path outside the project, a secret file, or a glob that could match one?"""
+        try:
+            words = shlex.split(command)[1:]
+        except ValueError:
+            return True
+        return any(re.search(r"[*?\[]", w) or self._private(self._path(w)) for w in words if not w.startswith("-"))
+
     def _ask(self, path: Path) -> bool:
         """Writes need approval outside the project, into protected files, or over an executable."""
         runs = path.suffix.casefold() in WIN_RUNS if WINDOWS else os.access(path, os.X_OK)  # Windows: every file is X_OK
@@ -155,6 +176,9 @@ class LocalTools:
 
     def read(self, path: str, offset: int = 1, limit: int = 2000) -> str:
         p = self._path(path)
+        if self._private(p) and not self.approver.ok("read", str(p)):
+            raise ToolError("User denied this read (outside the project, or a file that may hold secrets)."
+                            + self.approver.reason)
         if p.is_dir():
             return "\n".join(sorted(x.name + ("/" if x.is_dir() else "") for x in p.iterdir()))
         if not p.is_file():
@@ -215,15 +239,20 @@ class LocalTools:
         return f"Edited {p} ({n if replace_all else 1} replaced)"
 
     def find(self, name: str = "*", contains: str = "", path: str = ".") -> str:
-        """Search with no shell, so it never needs approval. Skips dot-folders and dependency folders."""
+        """Search with no shell. Asks only outside the project; skips dot-folders, dependency folders and secrets."""
         root, rx, hits, size = self._path(path), re.compile(contains) if contains else None, [], 0  # bad regex: re.error
         if "/" in name or not root.exists():
             raise ToolError("`name` matches file names only; put the folder in `path`." if "/" in name else "No such path.")
+        if self._private(root) and not self.approver.ok("find", f"{root} · name {name} · contains {contains or '-'}"):
+            raise ToolError("User denied this search (outside the project, or a file that may hold secrets)."
+                            + self.approver.reason)
         end, walk = time.monotonic() + 30, os.walk(root) if root.is_dir() else [(root.parent, [], [root.name])]
         for d, dirs, files in walk:
             dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x not in ("node_modules", "__pycache__"))
             for p in (Path(d, f) for f in sorted(fnmatch.filter(files, name))):
                 shown = (os.path.relpath(p, self.cwd) if self.cwd in p.parents else str(p)).replace(os.sep, "/").replace("\n", "\\n")
+                if rx and p != root and self._private(p):  # names are listed; secrets' contents aren't searched
+                    continue
                 try:
                     text = p.read_text(encoding="utf-8", errors="replace") if rx and p.is_file() and p.stat().st_size < 5_000_000 else ""
                 except OSError:  # unreadable: skip it, keep the rest
@@ -238,7 +267,7 @@ class LocalTools:
         return "\n".join(hits) or "[no matches]"
 
     def bash(self, command: str, timeout: int = 120) -> str:
-        if not self.approver.ok("bash", command):
+        if not self.approver.ok("bash", command, self._names_private(command)):
             raise ToolError("User denied this command." + self.approver.reason)
         try:
             code, stdout, stderr = run_shell(command, self.cwd, max(timeout, 1))
@@ -258,7 +287,9 @@ SCHEMAS = {
     "read": {
         "description": "Read a text file, or list a directory. Paths are relative to the working directory. Output "
                        "lines start with a line number and a tab; that prefix is not part of the file. Long files "
-                       "come in pages of about 30,000 characters; the last line says which offset to pass next.",
+                       "come in pages of about 30,000 characters; the last line says which offset to pass next. Reading "
+                       "outside the working directory, or a file that may hold secrets (.env, keys, credentials), asks "
+                       "the user, who may say no; don't read secrets unless the task needs them.",
         **schema({"path": {"type": "string"},
                   "offset": {"type": "integer", "description": "First line to show, 1-based (default 1)"},
                   "limit": {"type": "integer", "description": "Lines to show (default 2000)"}}, ["path"])},
@@ -279,15 +310,15 @@ SCHEMAS = {
         "description": "Run a shell command in the working directory and get stdout, stderr and the exit code. Use "
                        "it for git, tests and builds; search files with the find tool instead. There is no terminal: "
                        "commands get no input, so interactive programs end at once. Output over 30,000 characters is cut in the "
-                       "middle. Most commands ask the user first and can be denied; plain reads such as ls, cat, "
-                       "grep and head without pipes or redirects run without asking.",
+                       "middle. Most commands ask the user first and can be denied; plain reads such as ls, cat "
+                       "and head of project files, without pipes or redirects, run without asking.",
         **schema({"command": {"type": "string"},
                   "timeout": {"type": "integer", "description": "Seconds before the command is killed (default 120)"}},
                  ["command"])},
     "find": {
-        "description": "Find files by name, or lines by content (path:line: text), in a folder or one file. Read-only, "
-                       "never asks the user. Paths come back relative to the working directory. Skips dot-folders, "
-                       "node_modules and __pycache__, and symlinked folders. Stops at 500 results or 30 seconds.",
+        "description": "Find files by name, or lines by content (path:line: text), in a folder or one file. Read-only; "
+                       "asks the user only outside the working directory. Paths come back relative to the working directory. Skips dot-folders, "
+                       "node_modules and __pycache__, symlinked folders, and the contents of files that may hold secrets. Stops at 500 results or 30 seconds.",
         **schema({"name": {"type": "string",
                            "description": "Glob matched against file names only (no /), such as *.py; default *"},
                   "contains": {"type": "string", "description": "Python regex to match lines; omit to list files"},

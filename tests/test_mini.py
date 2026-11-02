@@ -1367,3 +1367,32 @@ def test_models_come_from_config(ws, monkeypatch):
     assert agent.should_compact()
     shipped = json.loads((Path(loop.__file__).with_name("models.json")).read_text())
     assert {shipped["main"], shipped["subagent"], shipped["subagent_cheap"]} <= set(shipped["models"])
+
+
+def test_reads_outside_the_project_or_of_secrets_ask_first(ws, tmp_path):
+    asked = []
+    approver = Approver(interactive=False)
+    approver.ok = lambda kind, detail, private=False: asked.append((kind, detail, private)) or False
+    t = LocalTools(str(ws), approver)
+    (ws / "app.py").write_text("x = 1\n")
+    (ws / ".env").write_text("TOKEN=secret\n")
+    (ws / ".env.example").write_text("TOKEN=\n")
+    outside = tmp_path / "elsewhere.txt"
+    outside.write_text("private\n")
+    assert "x = 1" in t.read("app.py") and "TOKEN=" in t.read(".env.example") and not asked
+    for path in (".env", str(outside), "~/.ssh/id_ed25519"):
+        with pytest.raises(ToolError, match="denied this read"):
+            t.read(path)
+    assert [a[0] for a in asked] == ["read"] * 3
+    assert "secret" not in t.find(contains="TOKEN")  # names may show; secrets' contents aren't searched
+    with pytest.raises(ToolError, match="denied this search"):
+        t.find(path=str(tmp_path))
+
+
+def test_safe_commands_lose_their_pass_on_private_paths(ws):
+    t = LocalTools(str(ws), Approver(interactive=False))
+    assert not t._names_private("cat app.py") and not t._names_private("ls -la")
+    for c in ("cat .env", "head ../x", "cat /etc/passwd", "tail ~/.aws/credentials", "cat *", "wc key.pem"):
+        assert t._names_private(c), c
+        assert not t.approver.ok("bash", c, True)  # headless: no pass, so denied
+    assert not Approver().pre_approved("grep -r TOKEN .")  # grep -r would read every file
