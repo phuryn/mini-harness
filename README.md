@@ -39,10 +39,11 @@ export ANTHROPIC_API_KEY=sk-ant-...      # add to ~/.zshrc to keep it
 **Windows** (PowerShell)
 
 ```powershell
+winget install Git.Git                   # uv needs git to fetch mini; mini's bash tool runs Git Bash
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
-winget install Git.Git                   # the bash tool runs Git Bash
+# open a new PowerShell window, so git and uv are on PATH
 uv tool install git+https://github.com/phuryn/mini-harness
-setx ANTHROPIC_API_KEY "sk-ant-..."      # then open a new terminal
+setx ANTHROPIC_API_KEY "sk-ant-..."      # then open a new window again
 ```
 
 That puts a `mini` command on your PATH. Update with `uv tool upgrade mini`, remove with `uv tool uninstall mini`.
