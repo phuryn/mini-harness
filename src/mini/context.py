@@ -26,10 +26,10 @@ def read_if(path: Path, cap: int = 20_000) -> str | None:
     return path.read_text(encoding="utf-8", errors="replace")[:cap] if path.is_file() else None
 
 
-def build_system(cwd: str, skills: list[dict], mcp_errors: list[str], sub: bool = False) -> str:
+def build_system(cwd: str, skills: list[dict], mcp_errors: list[str], sub: bool = False, model: str = "") -> str:
     root = Path(cwd)
     shell = f" (the bash tool runs {'Git Bash' if BASH else 'cmd.exe'})" if WINDOWS else ""
-    parts = [SUB if sub else BASE, f"Environment: {platform.system()}{shell} · cwd {root.resolve()} · session started {time.strftime('%Y-%m-%d %H:%M %Z')}"]
+    parts = [SUB if sub else BASE, f"Environment: {platform.system()}{shell} · model {model} · cwd {root.resolve()} · session started {time.strftime('%Y-%m-%d %H:%M %Z')}"]
     if (agents := read_if(root / "AGENTS.md")):
         parts.append(f"<project_instructions file=\"AGENTS.md\">\n{agents}\n</project_instructions>")
     if sub:

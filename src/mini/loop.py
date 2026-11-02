@@ -145,7 +145,7 @@ class Agent:
                 self.tools += hub.schemas if hub else []
             if os.environ.get("MINI_NO_WEB") != "1":  # e.g. benchmarks that forbid looking things up
                 self.tools.append(WEB_SEARCH)
-            self.system = build_system(cwd, list(skills), hub.errors if hub else [], sub)
+            self.system = build_system(cwd, list(skills), hub.errors if hub else [], sub, self.model)
             session.append("meta", model=self.model, cwd=str(cwd), system=self.system, tools=self.tools)
         self.other = OTHER.get(self.model)  # None for Claude
         self.cfg = cfg = model_config(self.model)

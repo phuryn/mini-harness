@@ -1134,7 +1134,7 @@ def test_prompt_rows_carry_a_marker_and_reset_the_terminal(ws, monkeypatch):
     with pytest.raises(ToolError):
         agent.local.write("conftest.py", fake)
     rows = asked[0].split("\n")
-    assert asked[0].startswith("\x1b[!p\x1b[r\x1b[0m\x1b[?7h")
+    assert asked[0].startswith("\x1b[!p\x1b7\x1b[r\x1b8\x1b[0m\x1b[?7h")  # reset, but keep the cursor where it is
     assert all(r.startswith("  \u2502 ") for r in rows[1:-1]) and rows[-1].startswith("  [")
 
 
