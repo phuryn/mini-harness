@@ -1,4 +1,5 @@
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -726,13 +727,23 @@ def test_edit_keeps_windows_line_endings(ws):
 
 
 def test_overwriting_an_executable_needs_approval(ws):
-    f = ws / "run.sh"
+    name = "run.bat" if os.name == "nt" else "run.sh"  # Windows has no execute bit: a file runs by its extension
+    f = ws / name
     f.write_text("echo hi")
     f.chmod(0o755)
     tools = LocalTools(str(ws), Approver(interactive=False))
-    tools.read("run.sh")
+    tools.read(name)
     with pytest.raises(ToolError, match="denied"):
-        tools.write("run.sh", "rm -rf ~")
+        tools.write(name, "rm -rf ~")
+
+
+def test_editing_a_plain_project_file_never_asks(ws):
+    # On Windows every existing file reported X_OK, so every edit asked and headless runs could change nothing.
+    (ws / "app.js").write_text("const a = 1;\n")
+    tools = LocalTools(str(ws), Approver(interactive=False))
+    tools.read("app.js")
+    tools.edit("app.js", "a = 1", "a = 2")
+    assert (ws / "app.js").read_text() == "const a = 2;\n"
 
 
 def test_read_refuses_huge_and_special_files(ws):
@@ -1207,6 +1218,7 @@ def test_find_stops_before_the_output_cap_cuts_the_middle(ws):
     assert len(out) < 30_000 and out.endswith("narrow the search]")
 
 
+@pytest.mark.skipif(os.name == "nt", reason="chmod(0) doesn't make a file unreadable on Windows")
 def test_find_skips_an_unreadable_file_and_keeps_the_rest(ws):
     (ws / "locked.txt").write_text("hit\n")
     (ws / "locked.txt").chmod(0)
@@ -1218,7 +1230,10 @@ def test_find_skips_an_unreadable_file_and_keeps_the_rest(ws):
 
 
 def test_find_survives_a_broken_symlink(ws):
-    (ws / "dead.py").symlink_to(ws / "missing.py")
+    try:
+        (ws / "dead.py").symlink_to(ws / "missing.py")
+    except OSError:  # Windows without Developer Mode can't create symlinks
+        pytest.skip("symlinks not available")
     (ws / "ok.py").write_text("hit\n")
     assert LocalTools(str(ws), Approver(interactive=False)).find("*.py", "hit") == "ok.py:1: hit"
 
@@ -1294,3 +1309,43 @@ def test_remote_mcp_server_is_reported_not_hung(ws):
     (ws / ".mcp.json").write_text('{"mcpServers": {"linear": {"type": "http", "url": "https://mcp.linear.app/mcp"}}}')
     hub = MCPHub(str(ws))
     assert hub.errors and "mcp-remote" in hub.errors[0] and not hub.tools
+
+
+# --- Windows port -------------------------------------------------------------
+
+def test_files_are_utf8_whatever_the_locale(ws):
+    # Windows' default encoding is the locale's code page: reads garbled, writes re-encoded.
+    tools = LocalTools(str(ws), Approver(auto=True))
+    tools.write("u.txt", "naïve → ✓\n")
+    assert (ws / "u.txt").read_bytes() == "naïve → ✓\n".encode()
+    assert "naïve → ✓" in tools.read("u.txt")
+    tools.edit("u.txt", "→ ✓", "← ✗")
+    assert (ws / "u.txt").read_bytes() == "naïve ← ✗\n".encode()
+    assert tools.find(contains="✗") == "u.txt:1: naïve ← ✗"
+
+
+def test_web_search_can_be_switched_off(ws, monkeypatch):
+    monkeypatch.setenv("MINI_NO_WEB", "1")
+    agent, _, _ = make(ws, [])
+    assert "web_search" not in [t["name"] for t in agent.tools]
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows only")
+def test_windows_aliases_of_protected_files_ask(ws):
+    (ws / "sub").mkdir()
+    tools = LocalTools(str(ws), Approver(interactive=False))
+    for alias in ["sub/package.json.", "sub/package.json ", "notes.txt:hidden", "GIT~1/hooks/pre-commit"]:
+        with pytest.raises(ToolError, match="denied"):
+            tools.write(alias, "x")
+    assert not (ws / "sub" / "package.json").exists()
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows only")
+def test_windows_bash_is_git_bash_and_takes_its_paths(ws):
+    from mini.tools import BASH
+    assert BASH and BASH.endswith("bash.exe")
+    tools = LocalTools(str(ws), Approver(auto=True))
+    assert tools.bash("""printf '%s|' "a b" 'c "d"' $((1+2))""") == 'a b|c "d"|3|'
+    (ws / "p.txt").write_text("hi\n")
+    posix = "/" + str(ws)[0].lower() + str(ws)[2:].replace("\\", "/") + "/p.txt"  # C:\x as Git Bash prints it: /c/x
+    assert "hi" in tools.read(posix)

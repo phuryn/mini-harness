@@ -9,6 +9,8 @@ import platform
 import time
 from pathlib import Path
 
+from .tools import BASH, WINDOWS
+
 BASE = """You are mini, a coding and research agent working in the user's terminal.
 
 Work in the current directory unless told otherwise. Read files before you change them, prefer `edit` over rewriting files, use `find` to search file names and contents, and `bash` for git and tests. Check your work by running it when you can. When calls don't depend on each other, make them all in one response: read several files at once, or edit and test together. Keep replies short: say what you did and what you found, not how you went about it.
@@ -21,12 +23,13 @@ SUB = """You are a subagent of mini, doing one delegated task in the user's work
 
 
 def read_if(path: Path, cap: int = 20_000) -> str | None:
-    return path.read_text(errors="replace")[:cap] if path.is_file() else None
+    return path.read_text(encoding="utf-8", errors="replace")[:cap] if path.is_file() else None
 
 
 def build_system(cwd: str, skills: list[dict], mcp_errors: list[str], sub: bool = False) -> str:
     root = Path(cwd)
-    parts = [SUB if sub else BASE, f"Environment: {platform.system()} · cwd {root.resolve()} · session started {time.strftime('%Y-%m-%d %H:%M %Z')}"]
+    shell = f" (the bash tool runs {'Git Bash' if BASH else 'cmd.exe'})" if WINDOWS else ""
+    parts = [SUB if sub else BASE, f"Environment: {platform.system()}{shell} · cwd {root.resolve()} · session started {time.strftime('%Y-%m-%d %H:%M %Z')}"]
     if (agents := read_if(root / "AGENTS.md")):
         parts.append(f"<project_instructions file=\"AGENTS.md\">\n{agents}\n</project_instructions>")
     if sub:

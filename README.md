@@ -1,6 +1,6 @@
 # mini
 
-A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,075 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
+A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,100 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
 
 It has a tool loop, five local tools plus web search, sessions you can resume, compaction, Agent Skills, MCP servers, subagents, a `/goal` mode with an independent reviewer, permission prompts with an optional AI judge, and memory kept in markdown files. It's built to show what a harness actually has to do, and which parts you can leave out.
 
@@ -16,7 +16,7 @@ It has a tool loop, five local tools plus web search, sessions you can resume, c
 
 | Harness | Size | Tools | Sessions | Compaction | Permissions | Subagents | Goal mode | MCP |
 |---|---|---|---|---|---|---|---|---|
-| **mini** | 1,075 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
+| **mini** | 1,100 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
 | mini-swe-agent | ~100-line agent class, Python | terminal only | no | no | runs in a container | no | no | no |
 | nanocode | ~250 lines, one Python file | 6 | no | no | no | no | no | no |
 | Pi | ~1,800-line agent loop; ~190K lines in the repo (TypeScript) | 4 (+3 optional) | yes, branching | yes | no, by design | no, by design | no | yes |
@@ -34,7 +34,7 @@ uv run --project ~/mini mini                 # interactive
 uv run --project ~/mini mini -p "explain this repo in five bullets"
 ```
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Optional keys: `DEEPSEEK_API_KEY` (DeepSeek), `OPENROUTER_API_KEY` (the permission judge).
+Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Optional keys: `DEEPSEEK_API_KEY` (DeepSeek), `OPENROUTER_API_KEY` (the permission judge). On Windows, install [Git for Windows](https://git-scm.com/download/win): the `bash` tool runs its Git Bash (`MINI_BASH` points to another `bash.exe`), and falls back to `cmd.exe` without it. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up.
 
 ## Using it
 
@@ -125,4 +125,4 @@ A full-screen UI, hooks, plugins, a sandbox, checkpoints (use git), forked or pa
 uv run pytest -q
 ```
 
-129 offline tests against a scripted fake client and a real MCP stdio server. They check the invariants above: append-only requests, an answer for every tool call, resume, compaction, interrupts, goal mode, subagent isolation. `AGENTS.md` has the rules for changing the code.
+134 offline tests against a scripted fake client and a real MCP stdio server. They check the invariants above: append-only requests, an answer for every tool call, resume, compaction, interrupts, goal mode, subagent isolation. `AGENTS.md` has the rules for changing the code.

@@ -45,7 +45,7 @@ class Session:
 
     def events(self):
         events = []
-        for line in self.path.read_text().splitlines() if self.path.exists() else []:
+        for line in self.path.read_text(encoding="utf-8").splitlines() if self.path.exists() else []:
             with contextlib.suppress(json.JSONDecodeError):  # a line cut off by a crash; all before it is intact
                 events.append(json.loads(line))
         return events

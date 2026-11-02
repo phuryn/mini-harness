@@ -102,6 +102,8 @@ def main():
     p.add_argument("--budget", type=float, help="with --goal: stop after this many dollars")
     p.add_argument("--json", action="store_true", help="headless: print a JSON result line at the end")
     args = p.parse_args()
+    for s in (sys.stdout, sys.stderr):  # a pipe on Windows defaults to the locale's code page, which can't print →
+        s.reconfigure(encoding="utf-8", errors="replace")
     if args.models:  # listing Claude models needs an Anthropic key; the others are always listed
         claude = [m.id for m in anthropic.Anthropic().models.list()] if os.environ.get("ANTHROPIC_API_KEY") else []
         return print(*claude, *OTHER, sep="\n")
@@ -142,6 +144,8 @@ def main():
                                   "answer": agent.final_text()}))
             else:
                 print(status_line(agent))
+            if result.get("stop") in ("error", "interrupted", "pause_turn"):  # a script must see the run didn't finish
+                sys.exit(1)
             return
         repl(agent, new)
     except RuntimeError as e:  # e.g. a missing API key

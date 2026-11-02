@@ -15,6 +15,19 @@ import time
 from pathlib import Path
 
 MAX_OUT = 30_000  # characters returned to the model per tool call
+WINDOWS = os.name == "nt"
+WIN_RUNS = {".exe", ".com", ".bat", ".cmd", ".ps1", ".vbs", ".msi"}  # Windows has no execute bit: these run by name
+
+
+def git_bash() -> str | None:
+    """The model writes bash, so on Windows mini runs Git for Windows' bash (or MINI_BASH), else falls back to cmd.
+    Fixed absolute paths only: a lookup on PATH would search the project folder first, which the project controls."""
+    tries = [os.environ.get("MINI_BASH", ""), os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), r"Git\bin\bash.exe"),
+             os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Git\bin\bash.exe")]
+    return next((p for p in tries if os.path.isabs(p) and os.path.isfile(p)), None)
+
+
+BASH = git_bash() if WINDOWS else None  # None: POSIX /bin/sh, or cmd.exe on Windows without Git Bash
 
 
 class ToolError(Exception):
@@ -34,15 +47,20 @@ def printable(text: str, lines: bool = False) -> str:
 
 
 def run_shell(command: str, cwd, timeout: int):
-    """Run a shell command with no stdin; on timeout or Ctrl-C kill its whole process group."""
-    proc = subprocess.Popen(command, shell=True, cwd=cwd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+    """Run a shell command with no stdin; on timeout or Ctrl-C kill its whole process group (tree, on Windows)."""
+    proc = subprocess.Popen([BASH, "-c", command] if BASH else command, shell=not BASH, cwd=cwd,
+                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                             stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
                             env={**os.environ, "PAGER": "cat"}, start_new_session=True)
     try:
         out, err = proc.communicate(timeout=timeout)
     except BaseException:
-        with contextlib.suppress(ProcessLookupError):  # already gone
-            os.killpg(proc.pid, signal.SIGKILL)
+        if WINDOWS:  # no process groups; taskkill by full path, since a bare name would search the project first
+            subprocess.run([os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), r"System32\taskkill.exe"),
+                            "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+        else:
+            with contextlib.suppress(ProcessLookupError):  # already gone
+                os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
         raise
     return proc.returncode, out, err
@@ -108,6 +126,8 @@ class LocalTools:
         self.seen: dict[Path, float] = {}  # path -> mtime when the model last read or wrote it
 
     def _path(self, p: str) -> Path:
+        if WINDOWS and re.match(r"/[a-zA-Z](/|$)", p):  # Git Bash spells C:\x as /c/x
+            p = f"{p[1]}:/{p[3:]}"
         path = Path(p).expanduser()
         return (path if path.is_absolute() else self.cwd / path).resolve()
 
@@ -124,11 +144,14 @@ class LocalTools:
         if self.cwd not in path.parents or self.cwd == home or self.cwd in home.parents:
             return False
         parts = [x.casefold() for x in path.relative_to(self.cwd).parts]
+        if WINDOWS and any(re.search(r"[:~]|[. ]$", x) for x in parts):  # streams, 8.3 names, trailing dots alias files
+            return False
         return not any(x.startswith(".") for x in parts) and parts[-1] not in self.PROTECTED
 
     def _ask(self, path: Path) -> bool:
         """Writes need approval outside the project, into protected files, or over an executable."""
-        return not self._inside(path) or (path.exists() and os.access(path, os.X_OK))
+        runs = path.suffix.casefold() in WIN_RUNS if WINDOWS else os.access(path, os.X_OK)  # Windows: every file is X_OK
+        return not self._inside(path) or (path.exists() and runs)
 
     def read(self, path: str, offset: int = 1, limit: int = 2000) -> str:
         p = self._path(path)
@@ -138,7 +161,7 @@ class LocalTools:
             raise ToolError("Not a regular file.")
         if p.stat().st_size > 5_000_000:
             raise ToolError("File is over 5 MB. Use bash (head, tail, grep) to look at parts of it.")
-        lines = p.read_text(errors="replace").splitlines()
+        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
         self.seen[p] = p.stat().st_mtime
         start, shown, size = max(offset, 1), [], 0
         for i, line in enumerate(lines[start - 1:start - 1 + max(limit, 1)], start):
@@ -159,10 +182,10 @@ class LocalTools:
             raise ToolError("User denied this write (outside the project, or a file that runs later)." + self.approver.reason)
         p.parent.mkdir(parents=True, exist_ok=True)
         if p.exists():
-            with p.open(newline="") as f:
+            with p.open(newline="", encoding="utf-8", errors="replace") as f:
                 if "\r\n" in f.read():  # keep a Windows file's line endings
                     content = content.replace("\r\n", "\n").replace("\n", "\r\n")
-        p.write_text(content, newline="")
+        p.write_text(content, newline="", encoding="utf-8")
         self.seen[p] = p.stat().st_mtime
         return f"Wrote {len(content.splitlines())} lines to {p}"
 
@@ -177,7 +200,7 @@ class LocalTools:
             raise ToolError("User denied this edit (outside the project, or a file that runs later)." + self.approver.reason)
         if not old:
             raise ToolError("`old` must not be empty.")
-        with p.open(newline="") as f:  # keep the file's own line endings
+        with p.open(newline="", encoding="utf-8") as f:  # keep the file's own line endings
             text = f.read()
         if old not in text and "\r\n" in text:  # the model writes \n; the file uses \r\n
             old = old.replace("\r\n", "\n").replace("\n", "\r\n")
@@ -187,7 +210,7 @@ class LocalTools:
             raise ToolError("`old` not found. It must match the file exactly, including whitespace.")
         if n > 1 and not replace_all:
             raise ToolError(f"`old` appears {n} times. Add context to make it unique, or set replace_all.")
-        p.write_text(text.replace(old, new) if replace_all else text.replace(old, new, 1), newline="")
+        p.write_text(text.replace(old, new) if replace_all else text.replace(old, new, 1), newline="", encoding="utf-8")
         self.seen[p] = p.stat().st_mtime
         return f"Edited {p} ({n if replace_all else 1} replaced)"
 
@@ -200,9 +223,9 @@ class LocalTools:
         for d, dirs, files in walk:
             dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x not in ("node_modules", "__pycache__"))
             for p in (Path(d, f) for f in sorted(fnmatch.filter(files, name))):
-                shown = (os.path.relpath(p, self.cwd) if self.cwd in p.parents else str(p)).replace("\n", "\\n")
+                shown = (os.path.relpath(p, self.cwd) if self.cwd in p.parents else str(p)).replace(os.sep, "/").replace("\n", "\\n")
                 try:
-                    text = p.read_text(errors="replace") if rx and p.is_file() and p.stat().st_size < 5_000_000 else ""
+                    text = p.read_text(encoding="utf-8", errors="replace") if rx and p.is_file() and p.stat().st_size < 5_000_000 else ""
                 except OSError:  # unreadable: skip it, keep the rest
                     continue
                 if not rx or "\0" not in text[:8000]:  # skip binaries

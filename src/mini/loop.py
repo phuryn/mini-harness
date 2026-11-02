@@ -42,7 +42,7 @@ OTHER = {"deepseek-flash": {"base_url": "https://api.deepseek.com/anthropic", "k
                             "efforts": ("low", "high", "max")}}
 PRICES["deepseek-flash"] = (0.30, 1.20, 0.006, 0.30)
 if (HOME / "models.json").exists():  # your own Anthropic-format endpoints: same fields, plus "prices"
-    OTHER.update(json.loads((HOME / "models.json").read_text()))
+    OTHER.update(json.loads((HOME / "models.json").read_text(encoding="utf-8")))
 PRICES.update({m: tuple(c["prices"]) for m, c in OTHER.items() if "prices" in c})
 SUMMARIZE = ("Context is full. Write a summary of this whole conversation that lets you continue the work from the "
              "summary alone: the user's requests and constraints, decisions made, files read and changed, commands "
@@ -145,7 +145,8 @@ class Agent:
                         "name": "task", **schema({"prompt": {"type": "string"}}, ["prompt"]),
                         "description": EXTRA_SCHEMAS["task"]["description"]}
                 self.tools += hub.schemas if hub else []
-            self.tools.append(WEB_SEARCH)
+            if os.environ.get("MINI_NO_WEB") != "1":  # e.g. benchmarks that forbid looking things up
+                self.tools.append(WEB_SEARCH)
             self.system = build_system(cwd, list(skills), hub.errors if hub else [], sub)
             session.append("meta", model=self.model, cwd=str(cwd), system=self.system, tools=self.tools)
         self.other = OTHER.get(self.model)  # None for Claude

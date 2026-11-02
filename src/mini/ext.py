@@ -33,7 +33,7 @@ def find_skills(cwd: str) -> list[dict]:
     skills = []
     for root in roots:
         for f in sorted(root.glob("*/SKILL.md")):
-            fields = frontmatter(f.read_text(errors="replace")[:4000])
+            fields = frontmatter(f.read_text(encoding="utf-8", errors="replace")[:4000])
             skills.append({"name": fields.get("name", f.parent.name), "description": fields.get("description", ""),
                            "path": str(f)})
     return skills
@@ -53,7 +53,7 @@ class MCPHub:
         if not cfg:
             return
         try:
-            servers = json.loads(cfg.read_text()).get("mcpServers", {})
+            servers = json.loads(cfg.read_text(encoding="utf-8")).get("mcpServers", {})
             if not isinstance(servers, dict):
                 raise ValueError('"mcpServers" must be an object')
         except (json.JSONDecodeError, AttributeError, ValueError) as e:
