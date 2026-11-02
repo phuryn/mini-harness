@@ -88,7 +88,7 @@ def main():
     p.add_argument("-p", "--prompt", help="run one prompt headless and print the answer")
     p.add_argument("-c", "--continue", dest="cont", action="store_true", help="continue the latest session")
     p.add_argument("-r", "--resume", help="resume a session by id prefix")
-    p.add_argument("--model", help="main model (default claude-opus-5-5)")
+    p.add_argument("--model", help="main model (default from models.json)")
     p.add_argument("--effort", default="high", help="low, medium, high, xhigh or max (DeepSeek: low, high, max)")
     p.add_argument("--models", action="store_true", help="list the models you can use, then exit")
     p.add_argument("--permissions", default="ask", choices=["ask", "judge", "yes"],

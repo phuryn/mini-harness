@@ -15,6 +15,7 @@ import re
 import secrets
 import subprocess
 import urllib.request
+from pathlib import Path
 
 import anthropic
 
@@ -22,28 +23,25 @@ from .context import build_system
 from .session import HOME, Session
 from .tools import CONTROL, SCHEMAS, WEB_SEARCH, LocalTools, ToolError, run_shell, schema, truncate
 
-MAIN_MODEL = os.environ.get("MINI_MODEL", "claude-opus-5-5")
-SUB_MODEL = "claude-sonnet-5-5"
-COMPACT_AT = int(os.environ.get("MINI_COMPACT_AT", 150_000))  # input tokens
+# Models, prices and limits live in models.json next to this file; ~/.mini/models.json overrides or adds entries.
+# "claude-*" holds the defaults for any Claude model. An entry with a "base_url" is another provider's
+# Anthropic-format endpoint: no server-side compaction or fallbacks there, so mini summarizes on its own.
+CONFIG = json.loads(Path(__file__).with_name("models.json").read_text(encoding="utf-8"))
+if (HOME / "models.json").exists():
+    mine = json.loads((HOME / "models.json").read_text(encoding="utf-8"))
+    CONFIG = {**CONFIG, **mine, "models": {**CONFIG["models"], **mine.get("models", {})}}
+MODELS = CONFIG["models"]
+OTHER = {m: c for m, c in MODELS.items() if "base_url" in c}
+MAIN_MODEL = os.environ.get("MINI_MODEL", CONFIG["main"])
+SUB_MODEL, CHEAP_MODEL = CONFIG["subagent"], CONFIG["subagent_cheap"]
+COMPACT_AT = int(os.environ.get("MINI_COMPACT_AT", MODELS["claude-*"]["compact_at"]))  # input tokens, Claude
 BETAS = ["compact-2026-09-04", "thinking-binding-controls-2026-08-01"]
 FALLBACK_BETA = "server-side-fallback-2026-07-01"
 
-# $ per million tokens: input, output, cache read, 5-minute cache write. Fallback targets included.
-# Haiku 5.5 cache rates assume the usual 0.1x / 1.25x multipliers (prompts under 100K tokens).
-PRICES = {"claude-opus-5-5": (4, 20, 0.20, 5), "claude-sonnet-5-5": (2, 10, 0.20, 2.5),
-          "claude-haiku-5-5": (0.10, 0.50, 0.01, 0.125), "claude-opus-5": (5, 25, 0.50, 6.25),
-          "claude-opus-4-8": (5, 25, 0.50, 6.25), "claude-sonnet-5": (2, 10, 0.20, 2.5)}
-CLAUDE = {"window": 1_000_000, "search": 0.01, "efforts": ("low", "medium", "high", "xhigh", "max")}  # $ per search
 
-# Other models that speak Anthropic's message format. They have no server-side compaction or fallbacks, so mini
-# summarizes on its own. Prices are DeepSeek's peak rates (off-peak is half); a web search is $0.00075.
-OTHER = {"deepseek-flash": {"base_url": "https://api.deepseek.com/anthropic", "key": "DEEPSEEK_API_KEY",
-                            "window": 1_048_576, "compact_at": 200_000, "search": 0.00075,
-                            "efforts": ("low", "high", "max")}}
-PRICES["deepseek-flash"] = (0.30, 1.20, 0.006, 0.30)
-if (HOME / "models.json").exists():  # your own Anthropic-format endpoints: same fields, plus "prices"
-    OTHER.update(json.loads((HOME / "models.json").read_text(encoding="utf-8")))
-PRICES.update({m: tuple(c["prices"]) for m, c in OTHER.items() if "prices" in c})
+def model_config(model: str) -> dict:
+    """Settings for a model by name: its own entry over the Claude defaults (another provider's entry stands alone)."""
+    return OTHER[model] if model in OTHER else {**MODELS["claude-*"], **MODELS.get(model, {})}
 SUMMARIZE = ("Context is full. Write a summary of this whole conversation that lets you continue the work from the "
              "summary alone: the user's requests and constraints, decisions made, files read and changed, commands "
              "run and their results, the current state, and the next step. Be specific: paths, names, errors. "
@@ -76,8 +74,8 @@ EXTRA_SCHEMAS = {
                        "constraint it needs. It has read, find, bash and web_search, is told not to change files (its "
                        "bash calls need approval like yours), and returns only its final answer.",
         **schema({"prompt": {"type": "string"},
-                  "model": {"type": "string", "enum": ["claude-sonnet-5-5", "claude-haiku-5-5"],
-                            "description": "Default claude-sonnet-5-5; claude-haiku-5-5 for plain reading or search"}},
+                  "model": {"type": "string", "enum": [SUB_MODEL, CHEAP_MODEL],
+                            "description": f"Default {SUB_MODEL}; {CHEAP_MODEL} for plain reading or search"}},
                  ["prompt"])},
     "ask_user": {
         "description": "Ask the user a question and wait for the answer. Use it only when you can't go on without "
@@ -150,8 +148,8 @@ class Agent:
             self.system = build_system(cwd, list(skills), hub.errors if hub else [], sub)
             session.append("meta", model=self.model, cwd=str(cwd), system=self.system, tools=self.tools)
         self.other = OTHER.get(self.model)  # None for Claude
-        cfg = self.other or CLAUDE
-        self.window, self.efforts, self.search_price = cfg["window"], cfg["efforts"], cfg["search"]
+        self.cfg = cfg = model_config(self.model)
+        self.window, self.efforts, self.search_price = cfg["window"], tuple(cfg["efforts"]), cfg["search"]
         if self.effort not in self.efforts:  # e.g. a subagent's "medium" on DeepSeek
             self.effort = "low" if sub else "high"
         self.client = client or (anthropic.Anthropic(base_url=self.other["base_url"], api_key=os.environ[
@@ -199,7 +197,7 @@ class Agent:
                   output_config={"effort": self.effort}, betas=list(BETAS))
         if self.other:  # thinking is on by default there; no thinking binding, betas or fallbacks
             del kw["thinking"], kw["betas"]
-        elif "haiku" not in self.model:  # refusals fall back to another model server-side
+        elif self.cfg.get("fallbacks"):  # refusals fall back to another model server-side
             kw["fallbacks"] = "default"
             kw["betas"].append(FALLBACK_BETA)
         return kw
@@ -234,10 +232,10 @@ class Agent:
         u, cost = resp.usage, 0.0
         for i in (u.iterations or [u]):  # each iteration (compaction, declined attempt, fallback) has its own price
             model = getattr(i, "model", None) or resp.model
-            pin, pout, pread, pwrite = PRICES.get(model) or PRICES.get(self.model) or PRICES["claude-opus-5-5"]
+            cfg = model_config(model) if model in MODELS else self.cfg  # a fallback target, or this session's model
             prompt = n(i.input_tokens) + n(i.cache_read_input_tokens) + n(getattr(i, "cache_creation_input_tokens", 0))
-            if "haiku-5-5" in model and prompt > 100_000:
-                pin, pout, pread, pwrite = 0.50, 2.50, 0.05, 0.625  # long-prompt rate card
+            p = cfg.get("prices_over_100k", cfg["prices"]) if prompt > 100_000 else cfg["prices"]  # $ per million
+            pin, pout, pread, pwrite = p["input"], p["output"], p["cache_read"], p["cache_write"]
             cost += (n(getattr(i, "input_tokens", 0)) * pin + n(getattr(i, "output_tokens", 0)) * pout
                      + n(getattr(i, "cache_read_input_tokens", 0)) * pread
                      + n(getattr(i, "cache_creation_input_tokens", 0)) * pwrite) / 1e6
@@ -442,7 +440,8 @@ class Agent:
 
     def should_compact(self):
         # after a failed compaction, wait until the context has grown another 20% before retrying
-        at = int(os.environ.get("MINI_COMPACT_AT", self.other["compact_at"])) if self.other else COMPACT_AT
+        own = self.other or MODELS.get(self.model, {})  # Claude without its own entry: the default
+        at = int(os.environ.get("MINI_COMPACT_AT", own["compact_at"])) if "compact_at" in own else COMPACT_AT
         return self.last_context > max(at, self.compact_failed_at * 1.2)
 
     def maybe_compact(self):

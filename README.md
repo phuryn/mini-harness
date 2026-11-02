@@ -74,35 +74,42 @@ Ctrl-C stops the current turn and keeps the session valid.
 
 Hosted servers with OAuth go through `mcp-remote`, which runs the login in your browser once and keeps the token. Tested with Linear. Every MCP call asks first unless `--allow` covers it (e.g. `--allow mcp__linear__list_` for Linear's read-only list tools).
 
-## Adding a model
+## Models and prices
 
-**A new Claude model** works by name: `--model claude-<name>`. Add its prices (in $ per million tokens: input, output, cache read, cache write) to `PRICES` in `src/mini/loop.py`, or the cost shown falls back to Opus 5.5 rates. Claude models get everything: adaptive thinking, server-side compaction, fallbacks on refusals (not on Haiku), and $0.01 web search. The context window is taken as 1M tokens; compaction starts at 150K (`MINI_COMPACT_AT` changes it).
-
-**Any other model** must serve Anthropic's Messages format (DeepSeek, Kimi, GLM and others offer such an endpoint). Add it to `~/.mini/models.json`:
+Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.json): which model is the default, which ones subagents use, and each model's prices, context window and compaction threshold. No model name is written in the code. To change or add something without touching the repo, put the same shape in `~/.mini/models.json`; its entries override or extend the shipped ones.
 
 ```json
-{"my-model": {
-  "base_url": "https://example.com/anthropic",
-  "key": "MY_API_KEY",
-  "window": 262144,
-  "compact_at": 150000,
-  "search": 0,
-  "efforts": ["low", "high"],
-  "prices": [0.5, 2, 0.05, 0.5]
-}}
+{
+  "main": "claude-opus-5-5",
+  "subagent": "claude-sonnet-5-5",
+  "subagent_cheap": "claude-haiku-5-5",
+  "models": {
+    "claude-*": {"window": 1000000, "compact_at": 150000, "search": 0.01, "fallbacks": true,
+                 "efforts": ["low", "medium", "high", "xhigh", "max"],
+                 "prices": {"input": 4, "output": 20, "cache_read": 0.20, "cache_write": 5}},
+    "claude-sonnet-5-5": {"prices": {"input": 2, "output": 10, "cache_read": 0.20, "cache_write": 2.5}},
+    "my-model": {"base_url": "https://example.com/anthropic", "key": "MY_API_KEY",
+                 "window": 262144, "compact_at": 150000, "search": 0, "efforts": ["low", "high"],
+                 "prices": {"input": 0.5, "output": 2, "cache_read": 0.05, "cache_write": 0.5}}
+  }
+}
 ```
 
 | Field | Meaning |
 |---|---|
-| `base_url` | The provider's Anthropic-format endpoint |
-| `key` | Name of the environment variable that holds the key (never the key itself) |
+| `main`, `subagent`, `subagent_cheap` | Default model; the model for subagents and the goal reviewer; the cheaper one the main model may pick for plain reading or search |
+| `prices` | Dollars per million tokens: `input`, `output`, `cache_read` (repeated context, about a tenth of input) and `cache_write` (first time context is cached). mini multiplies each request's token counts by these and adds them up; that's the running total after each turn |
+| `prices_over_100k` | Optional higher rates for prompts over 100K tokens (Haiku 5.5 has them) |
 | `window` | Context window in tokens (shown in the status line) |
-| `compact_at` | Input tokens at which mini summarizes the conversation; keep it well below `window` |
-| `search` | $ per web search, for the cost display |
-| `efforts` | Effort levels the provider accepts |
-| `prices` | $ per million tokens: input, output, cache read, cache write |
+| `compact_at` | Input tokens at which the conversation is summarized; keep it well below `window`. `MINI_COMPACT_AT` overrides it |
+| `search` | Dollars per web search |
+| `efforts` | Effort levels the model accepts |
+| `fallbacks` | Claude only: if the model declines partway, the API continues on another model |
+| `base_url`, `key` | Only for non-Claude models: the provider's Anthropic-format endpoint, and the name of the environment variable that holds its key (never the key itself) |
 
-Then run `mini --model my-model`. What changes for a non-Claude model: no thinking-block binding, betas or fallbacks are sent, compaction is done by mini itself (it asks the model for a summary) instead of the server, and subagents run on the same model. DeepSeek V4.1 Flash is built in as `deepseek-flash`. OpenAI-format endpoints aren't supported; they'd need a translation layer for messages, tools and thinking.
+**A new Claude model** needs one entry with its `prices`; everything else comes from `"claude-*"`. An unlisted Claude model still runs (`--model claude-<name>`) at the default prices. When names change, edit `main`, `subagent` and `subagent_cheap`.
+
+**Any other model** must serve Anthropic's Messages format (DeepSeek, Kimi, GLM and others offer such an endpoint) and needs every field, including `base_url` and `key`. It runs the same loop, tools and sessions, with three differences: no thinking-block binding, betas or fallbacks are sent; mini summarizes the conversation itself instead of the server; and subagents run on the same model. DeepSeek V4.1 Flash ships as `deepseek-flash`. OpenAI-format endpoints aren't supported; they'd need a translation layer for messages, tools and thinking.
 
 ## How it works
 
@@ -113,7 +120,7 @@ Then run `mini --model my-model`. What changes for a non-Claude model: no thinki
 - **Tools.** `read`, `write`, `edit`, `bash`, `find`, plus `web_search`, `task` (a subagent with a fresh context that returns only its answer), `ask_user` (a question, optionally with numbered options) and `goal_done`. Errors tell the model what to do next.
 - **Permissions.** Read-only commands and edits inside the project run freely. Other bash commands, MCP calls, writes outside the project and writes to files that run later (`.git/`, `Makefile`, `package.json`...) ask first, or go to [Jev](https://www.productcompass.pm/p/jev-decision-model), a small decision model, in `judge` mode. This is a gate, not a sandbox.
 - **`/goal`.** The model keeps working until it calls `goal_done`. The harness then runs `--verify`, and a reviewer subagent with an empty context checks the work. The worker never grades itself.
-- **Cost.** Every request is priced from its token usage and summed; the running total shows after each turn.
+- **Cost.** Every request is priced from its token usage with the rates in `models.json` and summed; the running total shows after each turn.
 
 ## Left out on purpose
 

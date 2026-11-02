@@ -1,0 +1,28 @@
+{
+  "main": "claude-opus-5-5",
+  "subagent": "claude-sonnet-5-5",
+  "subagent_cheap": "claude-haiku-5-5",
+  "models": {
+    "claude-*": {
+      "window": 1000000, "compact_at": 150000, "search": 0.01, "fallbacks": true,
+      "efforts": ["low", "medium", "high", "xhigh", "max"],
+      "prices": {"input": 4, "output": 20, "cache_read": 0.20, "cache_write": 5}
+    },
+    "claude-opus-5-5": {"prices": {"input": 4, "output": 20, "cache_read": 0.20, "cache_write": 5}},
+    "claude-sonnet-5-5": {"prices": {"input": 2, "output": 10, "cache_read": 0.20, "cache_write": 2.5}},
+    "claude-haiku-5-5": {
+      "fallbacks": false,
+      "prices": {"input": 0.10, "output": 0.50, "cache_read": 0.01, "cache_write": 0.125},
+      "prices_over_100k": {"input": 0.50, "output": 2.50, "cache_read": 0.05, "cache_write": 0.625}
+    },
+    "claude-opus-5": {"prices": {"input": 5, "output": 25, "cache_read": 0.50, "cache_write": 6.25}},
+    "claude-opus-4-8": {"prices": {"input": 5, "output": 25, "cache_read": 0.50, "cache_write": 6.25}},
+    "claude-sonnet-5": {"prices": {"input": 2, "output": 10, "cache_read": 0.20, "cache_write": 2.5}},
+    "deepseek-flash": {
+      "base_url": "https://api.deepseek.com/anthropic", "key": "DEEPSEEK_API_KEY",
+      "window": 1048576, "compact_at": 200000, "search": 0.00075,
+      "efforts": ["low", "high", "max"],
+      "prices": {"input": 0.30, "output": 1.20, "cache_read": 0.006, "cache_write": 0.30}
+    }
+  }
+}

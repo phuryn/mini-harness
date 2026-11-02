@@ -1349,3 +1349,19 @@ def test_windows_bash_is_git_bash_and_takes_its_paths(ws):
     (ws / "p.txt").write_text("hi\n")
     posix = "/" + str(ws)[0].lower() + str(ws)[2:].replace("\\", "/") + "/p.txt"  # C:\x as Git Bash prints it: /c/x
     assert "hi" in tools.read(posix)
+
+
+def test_models_come_from_config(ws, monkeypatch):
+    """A new Claude model needs only a models.json entry: unlisted fields fall back to the "claude-*" defaults."""
+    import mini.loop as loop
+    monkeypatch.setitem(loop.MODELS, "claude-next", {"fallbacks": False, "compact_at": 900,
+                                                      "prices": {"input": 1, "output": 2, "cache_read": 0.1, "cache_write": 1.25}})
+    agent, client, _ = make(ws, [reply(text("x"), model="claude-next", u=usage(inp=1_000_000, out=1_000_000))],
+                            model="claude-next")
+    agent.turn("hi")
+    assert agent.cost == pytest.approx(1 + 2) and agent.window == 1_000_000 and "xhigh" in agent.efforts
+    assert "fallbacks" not in client.requests[0] and "thinking" in client.requests[0]
+    agent.last_context = 901
+    assert agent.should_compact()
+    shipped = json.loads((Path(loop.__file__).with_name("models.json")).read_text())
+    assert {shipped["main"], shipped["subagent"], shipped["subagent_cheap"]} <= set(shipped["models"])
