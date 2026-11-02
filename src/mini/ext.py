@@ -16,16 +16,26 @@ import threading
 from pathlib import Path
 
 
+def frontmatter(text: str) -> dict:
+    """The YAML header of a SKILL.md (Agent Skills format): `key: value` lines, plus folded multi-line values."""
+    m, fields, key = re.match(r"---\r?\n(.*?)\r?\n---", text, re.S), {}, None
+    for line in m.group(1).splitlines() if m else []:
+        if kv := re.match(r"^([\w-]+):\s*(.*)$", line):
+            key, fields[kv[1]] = kv[1], kv[2].strip()
+        elif key and line[:1] in (" ", "\t"):  # continuation of a `>` or `|` block, or a wrapped value
+            fields[key] = (fields[key] if fields[key] not in (">", "|", ">-", "|-") else "") + " " + line.strip()
+    return {k: v.strip().strip("\"'") for k, v in fields.items()}
+
+
 def find_skills(cwd: str) -> list[dict]:
-    roots = [Path(cwd) / "skills", Path(cwd) / ".agents" / "skills", Path.home() / ".mini" / "skills"]
+    """Agent Skills (SKILL.md + YAML header), in mini's folders and in the ones Claude Code and Codex use."""
+    roots = [Path(cwd) / d / "skills" for d in ("", ".claude", ".agents")] + [Path.home() / ".mini" / "skills"]
     skills = []
     for root in roots:
         for f in sorted(root.glob("*/SKILL.md")):
-            head = f.read_text(errors="replace")[:2000]
-            m = re.match(r"---\n(.*?)\n---", head, re.S)
-            fields = dict(re.findall(r"^(\w+):\s*(.+)$", m.group(1), re.M)) if m else {}
-            skills.append({"name": fields.get("name", f.parent.name),
-                           "description": fields.get("description", "").strip("\"'"), "path": str(f)})
+            fields = frontmatter(f.read_text(errors="replace")[:4000])
+            skills.append({"name": fields.get("name", f.parent.name), "description": fields.get("description", ""),
+                           "path": str(f)})
     return skills
 
 
@@ -38,7 +48,8 @@ class MCPHub:
 
     def __init__(self, cwd: str):
         self.tools, self.schemas, self.errors = {}, [], []  # tools: api name -> (session, real name)
-        cfg = next((p for p in [Path(cwd) / "mcp.json", Path.home() / ".mini" / "mcp.json"] if p.exists()), None)
+        cfg = next((p for p in [Path(cwd) / "mcp.json", Path(cwd) / ".mcp.json", Path.home() / ".mini" / "mcp.json"]
+                    if p.exists()), None)
         if not cfg:
             return
         try:
@@ -52,6 +63,10 @@ class MCPHub:
         threading.Thread(target=self.loop.run_forever, daemon=True).start()
         self.stop, self.tasks = asyncio.Event(), []
         for name, spec in servers.items():
+            if not isinstance(spec, dict) or "command" not in spec:  # remote servers: stdio bridge, e.g. mcp-remote
+                self.errors.append(f"{name}: only stdio servers (\"command\") are supported; for a URL use "
+                                   f"\"command\": \"npx\", \"args\": [\"-y\", \"mcp-remote\", \"<url>\"]")
+                continue
             ready = concurrent.futures.Future()
             task = asyncio.run_coroutine_threadsafe(self._serve(name, spec, ready), self.loop)
             self.tasks.append(task)

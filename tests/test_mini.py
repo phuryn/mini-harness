@@ -1247,7 +1247,50 @@ def test_ask_user_offers_numbered_options(ws, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda p: shown.append(p) or "2")
     agent.turn("set it up")
     assert "1. postgres" in shown[0] and "2. sqlite" in shown[0]
-    assert client.requests[1]["messages"][-1]["content"][0]["content"] == "sqlite"
+    assert client.requests[1]["messages"][-1]["content"][0]["content"] == "The user picked option 2: sqlite"
+    assert not [e for e in agent.session.events() if e["kind"] == "answer"]  # model-written text never counts as the user's
     monkeypatch.setattr("builtins.input", lambda p: "mysql, actually")
     agent.turn("again")
     assert client.requests[3]["messages"][-1]["content"][0]["content"] == "mysql, actually"
+
+
+def test_reviewer_verdict_is_the_exact_last_line(ws):
+    for review, ok in [("**VERDICT: DONE**", True), ("all fine\nVerdict: done", True),
+                       ("VERDICT: NOT DONE: it would be VERDICT: DONE once migrated", False),
+                       ("VERDICT: DONE\nbut the README is missing", False)]:
+        agent, _, _ = make(ws, [reply(tool("goal_done", {"evidence": "e"}), stop="tool_use"), reply(text("x")),
+                                reply(text(review))])
+        g = agent.set_goal("ship", max_turns=1)
+        assert (g["status"] == "done") is ok, review
+
+
+def test_a_failing_reviewer_pauses_the_goal_and_its_cost_counts(ws):
+    agent, client, _ = make(ws, [reply(tool("goal_done", {"evidence": "e"}), stop="tool_use"), reply(text("x"))])
+    agent.run_subagent = lambda prompt, model=None: (_ for _ in ()).throw(ToolError("The subagent stopped (refusal)"))
+    g = agent.set_goal("ship")
+    assert g["status"] == "paused" and g["note"].startswith("reviewer failed") and g["turns"] == 1
+
+
+def test_reviewer_is_told_the_verify_command_passed(ws):
+    agent, client, _ = make(ws, [reply(tool("goal_done", {"evidence": "e"}), stop="tool_use"), reply(text("x")),
+                                 reply(text("VERDICT: DONE"))])
+    agent.set_goal("ship", verify="true")
+    assert "already ran `true` and it passed" in client.requests[2]["messages"][0]["content"]
+
+
+def test_skills_follow_the_agent_skills_format_and_claude_code_folders(ws):
+    d = ws / ".claude" / "skills" / "release-notes"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: release-notes\ndescription: >-\n  Write release notes from merged PRs.\n"
+                                "  Use when the user asks for a changelog.\nlicense: MIT\n---\n# Steps\n")
+    (ws / "skills" / "plain").mkdir(parents=True)
+    (ws / "skills" / "plain" / "SKILL.md").write_text('---\nname: plain\ndescription: "Quoted one-liner"\n---\n')
+    found = {s["name"]: s for s in find_skills(str(ws))}
+    assert found["release-notes"]["description"] == "Write release notes from merged PRs. Use when the user asks for a changelog."
+    assert found["plain"]["description"] == "Quoted one-liner"
+
+
+def test_remote_mcp_server_is_reported_not_hung(ws):
+    (ws / ".mcp.json").write_text('{"mcpServers": {"linear": {"type": "http", "url": "https://mcp.linear.app/mcp"}}}')
+    hub = MCPHub(str(ws))
+    assert hub.errors and "mcp-remote" in hub.errors[0] and not hub.tools

@@ -11,6 +11,7 @@ Three rules keep this loop valid on current Claude models:
 """
 import json
 import os
+import re
 import secrets
 import subprocess
 import urllib.request
@@ -62,8 +63,9 @@ GOAL_RULES = (
     "If you cannot make progress without the user, end your message with a line that starts with BLOCKED: and the question.")
 
 REVIEW = ("An agent says it met the goal below. Check whether it really did, in the working directory: read the files "
-          "and run read-only checks. Don't take its word for anything.\n\nGoal: {objective}\n\nIts evidence: {claim}\n\n"
-          "End with one line, VERDICT: DONE or VERDICT: NOT DONE, and before it say what is missing, if anything.")
+          "and run read-only checks. Don't take its word for anything.{verified}\n\nGoal: {objective}\n\nIts evidence: "
+          "{claim}\n\nSay NOT DONE only for a concrete gap you found, not for something you couldn't check; name what you "
+          "couldn't check. End with a last line that is exactly VERDICT: DONE or VERDICT: NOT DONE.")
 
 GOAL_OFF = "Goal mode is off (status: {status}). Earlier goal instructions no longer apply unless the user resumes the goal."
 
@@ -354,11 +356,12 @@ class Agent:
             if not self.approver.interactive:
                 return "Nobody can answer: this is a headless run. Assume what's most reasonable, say so, go on."
             self.ui.end_message()
-            opts = args.get("options") or []
-            q = args["question"] + "".join(f"\n    {i}. {o}" for i, o in enumerate(opts, 1))
+            opts = [str(o) for o in args.get("options") or []] if isinstance(args.get("options"), list) else []
+            q = str(args["question"]) + "".join(f"\n    {i}. {o}" for i, o in enumerate(opts, 1))
             answer = input(f"\033[33m  ? {CONTROL.sub('', q).replace(chr(0x2502), '|')}\n  > \033[0m").strip() or "(no answer)"
-            answer = opts[int(answer) - 1] if answer.isdigit() and 0 < int(answer) <= len(opts) else answer
-            self.session.append("answer", q=args["question"], a=answer)  # the judge counts it as the user's words
+            if answer.isdecimal() and 0 < int(answer) <= len(opts):  # the model wrote the option: not the user's words
+                return f"The user picked option {answer}: {opts[int(answer) - 1]}"
+            self.session.append("answer", q=args["question"], a=answer)  # typed by the user: the judge counts it
             return answer
         if name == "goal_done":
             if not self.goal or self.goal["status"] != "active":
@@ -485,7 +488,13 @@ class Agent:
                     g["status"], g["note"] = "paused", stop
                     break
                 if self.goal_claim is not None:
-                    ok, out = self.verify()
+                    try:
+                        ok, out = self.verify()
+                    except ToolError as e:  # the worker can't fix a broken reviewer
+                        g["status"], g["note"] = "paused", f"reviewer failed: {e}"[:300]
+                        break
+                    finally:
+                        g["spent"] = self.cost - start_cost  # the review counts toward the budget
                     if ok:
                         g["status"], g["note"] = "done", self.goal_claim[:500]
                         break
@@ -521,8 +530,7 @@ class Agent:
             if code:
                 return False, f"The harness ran `{cmd}` and it failed:\n{(out + err)[-4000:]}"
         self.ui.note("a fresh reviewer is checking the goal")
-        try:
-            review = self.run_subagent(REVIEW.format(objective=self.goal["objective"], claim=self.goal_claim[:4000]))
-        except ToolError as e:
-            return False, f"The reviewer couldn't finish: {e}"
-        return "VERDICT: DONE" in review[-300:], f"A reviewer checked and disagrees:\n{review[-4000:]}"
+        review = self.run_subagent(REVIEW.format(objective=self.goal["objective"], claim=self.goal_claim[:4000], verified=(
+            f" The harness already ran `{cmd}` and it passed." if cmd else "")))
+        last = re.sub(r"[*_`\s]+", " ", (review.strip().splitlines() or [""])[-1]).strip().upper()
+        return last == "VERDICT: DONE", f"A reviewer checked and disagrees:\n{review[-4000:]}"

@@ -23,7 +23,8 @@ HELP = """/new [model]         start a fresh session, on another model if given 
 
 
 DREAM = ("Review the project memory: read memory/INDEX.md and every file it routes to. Merge duplicates, delete what "
-         "is stale or contradicted by the code, tighten the wording, and keep INDEX.md accurate. Then list what you changed.")
+         "is superseded or contradicted by the code (keep plans not built yet), tighten the wording, and keep INDEX.md "
+         "accurate. Then list what you changed.")
 
 
 class UI:
@@ -203,6 +204,7 @@ def command(agent, line, new):
         agent.effort = rest if rest in agent.efforts else agent.effort
         print(f"effort {agent.effort} · {agent.model} takes {', '.join(agent.efforts)}")
     elif cmd == "/dream":
+        agent.maybe_compact()
         agent.turn(DREAM)
     elif cmd == "/compact":
         agent.compact()
