@@ -119,8 +119,9 @@ def main():
     p.add_argument("--model", help="main model (default from models.json)")
     p.add_argument("--effort", default="high", help="low, medium, high, xhigh or max (DeepSeek: low, high, max)")
     p.add_argument("--models", action="store_true", help="list the models you can use, then exit")
-    p.add_argument("--permissions", default="ask", choices=["ask", "judge", "yes"],
-                   help="who approves risky calls: you, Jev (a decision model; needs OPENROUTER_API_KEY), or nobody")
+    p.add_argument("--permissions", choices=["ask", "judge", "yes"],
+                   help="who approves risky calls: you, Jev (a decision model; needs OPENROUTER_API_KEY), or nobody. "
+                        "Default: judge when that key is set, else ask; headless runs default to ask")
     p.add_argument("--allow", action="append", default=[], metavar="PREFIX",
                    help="pre-approve bash commands starting with these words, or MCP tools starting with PREFIX "
                         "(repeatable). Allowing a test runner lets the model run code it wrote")
@@ -146,8 +147,9 @@ def main():
     cwd = os.getcwd()
     headless = bool(args.prompt or args.goal)
     ui = UI(silent=headless and args.json)
-    approver = Approver(auto=args.permissions == "yes", interactive=not headless, allow=args.allow,
-                        use_judge=args.permissions == "judge")
+    # Jev by default when its key is there, but a headless run only uses it when asked: nobody watches it.
+    mode = args.permissions or ("judge" if os.environ.get("OPENROUTER_API_KEY") and not headless else "ask")
+    approver = Approver(auto=mode == "yes", interactive=not headless, allow=args.allow, use_judge=mode == "judge")
     hub, skills = MCPHub(cwd), find_skills(cwd)
     for e in hub.errors:
         ui.warn(f"MCP {e}")
@@ -192,7 +194,8 @@ def repl(agent, new):
         import readline  # noqa: F401  (line editing and history)
     except ImportError:
         pass
-    print(f"{DIM}mini · {agent.model} · session {agent.session.id} · /help for commands{OFF}")
+    mode = "yes" if agent.approver.auto else "judge" if agent.approver.use_judge else "ask"
+    print(f"{DIM}mini · {agent.model} · permissions {mode} · session {agent.session.id} · /help for commands{OFF}")
     while True:
         try:
             line = input(f"\n{CYA}›{OFF} ").strip()

@@ -93,7 +93,7 @@ class Approver:
             return False
         return bool(words) and ((words[0] in self.SAFE and not private) or any(words[:len(a)] == a for a in self.allow))
 
-    def ok(self, kind: str, detail: str, private=False) -> bool:
+    def ok(self, kind: str, detail: str, private=False, secret=False) -> bool:
         if self.auto or (kind == "bash" and self.pre_approved(detail, private)):
             return True
         if kind == "mcp" and any(detail.split()[0].startswith(a[0]) for a in self.allow):
@@ -102,7 +102,7 @@ class Approver:
         if len(detail) > 4000:  # too long to review, by you or the judge, which must see the whole action
             self.reason = " Too long to review: split it into smaller steps."
             return False
-        if self.use_judge and self.judge and kind != "write":  # gated writes run later: the user decides
+        if self.use_judge and self.judge and kind != "write" and not secret:  # gated writes, secrets: the user decides
             verdict, why = self.judge(kind, detail)
             self.reason = f" Judge: {why}"
             if verdict != "ask":
@@ -154,20 +154,26 @@ class LocalTools:
                         r"|^(\.netrc|\.npmrc|\.pypirc|\.git-credentials|credentials(\.json)?|secrets?\.(json|ya?ml|toml))$")
     SECRET_DIRS = {".ssh", ".aws", ".gnupg", ".kube", ".docker", ".azure", "gcloud"}
 
+    def _secret(self, path: Path) -> bool:
+        parts = [x.casefold() for x in path.parts]
+        return bool(self.SECRET_DIRS.intersection(parts) or self.SECRET.search(parts[-1] if parts else ""))
+
     def _private(self, path: Path) -> bool:
         """Reading asks first outside the working directory, and for files that may hold secrets anywhere:
         whatever the model reads goes to the API and into the session file."""
-        parts = [x.casefold() for x in path.parts]
-        return (self.cwd != path and self.cwd not in path.parents) or bool(
-            self.SECRET_DIRS.intersection(parts) or self.SECRET.search(parts[-1] if parts else ""))
+        return (self.cwd != path and self.cwd not in path.parents) or self._secret(path)
+
+    def _words(self, command: str) -> list[Path] | None:
+        """The paths a command names (every word after the first that isn't a flag); None if it can't be split."""
+        try:
+            return [self._path(w) for w in shlex.split(command)[1:] if not w.startswith("-")]
+        except ValueError:
+            return None
 
     def _names_private(self, command: str) -> bool:
         """Does a command name a path outside the project, a secret file, or a glob that could match one?"""
-        try:
-            words = shlex.split(command)[1:]
-        except ValueError:
-            return True
-        return any(re.search(r"[*?\[]", w) or self._private(self._path(w)) for w in words if not w.startswith("-"))
+        paths = self._words(command)
+        return paths is None or bool(re.search(r"[*?\[]", command)) or any(self._private(p) for p in paths)
 
     def _ask(self, path: Path) -> bool:
         """Writes need approval outside the project, into protected files, or over an executable."""
@@ -176,7 +182,7 @@ class LocalTools:
 
     def read(self, path: str, offset: int = 1, limit: int = 2000) -> str:
         p = self._path(path)
-        if self._private(p) and not self.approver.ok("read", str(p)):
+        if self._private(p) and not self.approver.ok("read", str(p), secret=self._secret(p)):
             raise ToolError("User denied this read (outside the project, or a file that may hold secrets)."
                             + self.approver.reason)
         if p.is_dir():
@@ -243,7 +249,8 @@ class LocalTools:
         root, rx, hits, size = self._path(path), re.compile(contains) if contains else None, [], 0  # bad regex: re.error
         if "/" in name or not root.exists():
             raise ToolError("`name` matches file names only; put the folder in `path`." if "/" in name else "No such path.")
-        if self._private(root) and not self.approver.ok("find", f"{root} · name {name} · contains {contains or '-'}"):
+        if self._private(root) and not self.approver.ok("find", f"{root} · name {name} · contains {contains or '-'}",
+                                                        secret=self._secret(root)):
             raise ToolError("User denied this search (outside the project, or a file that may hold secrets)."
                             + self.approver.reason)
         end, walk = time.monotonic() + 30, os.walk(root) if root.is_dir() else [(root.parent, [], [root.name])]
@@ -267,7 +274,8 @@ class LocalTools:
         return "\n".join(hits) or "[no matches]"
 
     def bash(self, command: str, timeout: int = 120) -> str:
-        if not self.approver.ok("bash", command, self._names_private(command)):
+        secret = any(self._secret(p) for p in self._words(command) or [])  # names a secret file: you decide
+        if not self.approver.ok("bash", command, self._names_private(command), secret):
             raise ToolError("User denied this command." + self.approver.reason)
         try:
             code, stdout, stderr = run_shell(command, self.cwd, max(timeout, 1))

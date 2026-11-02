@@ -97,6 +97,8 @@ def need_key(model, client):
     key = OTHER.get(model, {}).get("key")
     if key and not client and (not os.environ.get(key) or "ANTHROPIC_CUSTOM_HEADERS" in os.environ):
         raise RuntimeError(f"{model} needs {key} set and ANTHROPIC_CUSTOM_HEADERS unset (the SDK sends those anywhere).")
+    if not key and not client and not (os.environ.get("ANTHROPIC_API_KEY") or os.environ.get("ANTHROPIC_AUTH_TOKEN")):
+        raise RuntimeError(f"{model} needs ANTHROPIC_API_KEY set (README: Keys).")
 
 
 def n(x) -> int:

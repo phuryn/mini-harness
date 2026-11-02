@@ -1,6 +1,6 @@
 # mini
 
-A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,130 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
+A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,170 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
 
 It has a tool loop, five local tools plus web search, sessions you can resume, compaction, Agent Skills, MCP servers, subagents, a `/goal` mode with an independent reviewer, permission prompts with an optional AI judge, and memory kept in markdown files. It's built to show what a harness actually has to do, and which parts you can leave out.
 
@@ -16,7 +16,7 @@ It has a tool loop, five local tools plus web search, sessions you can resume, c
 
 | Harness | Size | Tools | Sessions | Compaction | Permissions | Subagents | Goal mode | MCP |
 |---|---|---|---|---|---|---|---|---|
-| **mini** | 1,130 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
+| **mini** | 1,170 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
 | mini-swe-agent | ~100-line agent class, Python | terminal only | no | no | runs in a container | no | no | no |
 | nanocode | ~250 lines, one Python file | 6 | no | no | no | no | no | no |
 | Pi | ~1,800-line agent loop; ~190K lines in the repo (TypeScript) | 4 (+3 optional) | yes, branching | yes | no, by design | no, by design | no | yes |
@@ -26,14 +26,14 @@ As of November 2026. Pi is built to be extended; mini is built to be read. Small
 
 ## Install
 
-mini is a Python program, installed with [uv](https://docs.astral.sh/uv/) (one download; it fetches Python 3.12+ itself if needed).
+mini is a Python program, installed with [uv](https://docs.astral.sh/uv/), which also fetches Python 3.12+ if you don't have it. The repo is private for now, so you need access on GitHub; the install command asks you to sign in once.
 
-**macOS / Linux**
+**macOS / Linux** (Terminal)
 
 ```bash
 curl -LsSf https://astral.sh/uv/install.sh | sh
+# open a new terminal window, so uv is on PATH
 uv tool install git+https://github.com/phuryn/mini-harness
-export ANTHROPIC_API_KEY=sk-ant-...      # add to ~/.zshrc to keep it
 ```
 
 **Windows** (PowerShell)
@@ -43,18 +43,48 @@ winget install Git.Git                   # uv needs git to fetch mini; mini's ba
 powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
 # open a new PowerShell window, so git and uv are on PATH
 uv tool install git+https://github.com/phuryn/mini-harness
-setx ANTHROPIC_API_KEY "sk-ant-..."      # then open a new window again
 ```
 
-That puts a `mini` command on your PATH. Update with `uv tool upgrade mini`, remove with `uv tool uninstall mini`.
+Either way, the last command ends with `Installed 1 executable: mini`. Update later with `uv tool upgrade mini`; remove with `uv tool uninstall mini`.
+
+## Keys
+
+mini reads its keys from environment variables. Only the first is required.
+
+| Variable | What it's for | Where to get it |
+|---|---|---|
+| `ANTHROPIC_API_KEY` | Claude models (required for the default setup) | [console.anthropic.com](https://console.anthropic.com/settings/keys) |
+| `OPENROUTER_API_KEY` | The permission judge, Jev. With this key set, Jev approves risky actions it's sure about and asks you only when it isn't | [openrouter.ai/keys](https://openrouter.ai/keys) |
+| `DEEPSEEK_API_KEY` | DeepSeek models (`--model deepseek-flash`) | [platform.deepseek.com](https://platform.deepseek.com/api_keys) |
+
+Set them once, so every new terminal has them:
+
+```bash
+# macOS (zsh); on Linux use ~/.bashrc
+echo 'export ANTHROPIC_API_KEY="sk-ant-..."' >> ~/.zshrc
+echo 'export OPENROUTER_API_KEY="sk-or-..."' >> ~/.zshrc
+source ~/.zshrc
+```
+
+```powershell
+# Windows: saved for new windows, so open a new PowerShell afterwards
+setx ANTHROPIC_API_KEY "sk-ant-..."
+setx OPENROUTER_API_KEY "sk-or-..."
+```
+
+A model whose key is missing refuses to start and says which variable to set. Keys never go on the command line or in a config file.
+
+## First run
 
 ```bash
 cd ~/some/project
-mini                                      # interactive
-mini -p "explain this repo in five bullets"
+mini                                      # interactive; /help lists commands, /exit quits
+mini -p "explain this repo in five bullets"   # one prompt, then exit
 ```
 
-Optional keys: `DEEPSEEK_API_KEY` (DeepSeek), `OPENROUTER_API_KEY` (the permission judge). On Windows without Git for Windows, the `bash` tool falls back to `cmd.exe`; `MINI_BASH` points it to another `bash.exe`. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up.
+The first line shows the model and who approves risky actions: `permissions judge` when the OpenRouter key is set, `permissions ask` otherwise.
+
+On Windows without Git for Windows, the `bash` tool falls back to `cmd.exe`; `MINI_BASH` points it to another `bash.exe`. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up.
 
 To work on mini itself: `git clone https://github.com/phuryn/mini-harness && cd mini-harness && uv sync && uv run pytest -q`, then `uv run --project <clone> mini` from any folder.
 
@@ -80,7 +110,7 @@ Ctrl-C stops the current turn and keeps the session valid.
 | `-c` / `-r <id>` | Continue the latest session, or resume one |
 | `--model`, `--effort` | Model (default: `main` in `models.json`) and effort (default `high`); `--models` lists what your keys can use |
 | `--allow "python3 -m pytest"` | Pre-approve bash commands starting with these words, or MCP tools starting with this prefix (repeatable). Headless mode denies everything else |
-| `--permissions ask\|judge\|yes` | Who approves risky calls: you, the Jev judge, or nobody (`yes`: only in a sandbox) |
+| `--permissions ask\|judge\|yes` | Who approves risky calls: you, the Jev judge, or nobody (`yes`: only in a sandbox). Default: `judge` when `OPENROUTER_API_KEY` is set, else `ask`; headless runs default to `ask` |
 | `--goal "..." --verify "pytest -q"` | Headless goal mode; done only when the verify command passes and a fresh reviewer agrees |
 | `--max-turns N`, `--budget 2.50` | Limits for goal mode |
 
@@ -141,7 +171,7 @@ Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.
 - **Sessions.** One JSONL file per conversation under `~/.mini/sessions/<project>/`. Resuming means reading it back; a crash mid-tool is repaired on resume, by appending.
 - **Every tool call gets an answer**, including failures, denials and interrupts, so the transcript stays valid.
 - **Tools.** `read`, `write`, `edit`, `bash`, `find`, plus `web_search`, `task` (a subagent with a fresh context that returns only its answer), `ask_user` (a question, optionally with numbered options) and `goal_done`. Errors tell the model what to do next.
-- **Permissions.** Reads, searches and edits inside the project run freely. Reading outside the project, or any file that may hold secrets (`.env`, keys, `~/.ssh`, `~/.aws`, credentials files), asks first, because whatever the model reads goes to the API and into the session file. Searches never look inside those files, and `cat`/`head` lose their free pass on such paths. Other bash commands, MCP calls, writes outside the project and writes to files that run later (`.git/`, `Makefile`, `package.json`...) ask first, or go to [Jev](https://www.productcompass.pm/p/jev-decision-model), a small decision model, in `judge` mode. This is a gate, not a sandbox.
+- **Permissions.** Reads, searches and edits inside the project run freely. Reading outside the project, or any file that may hold secrets (`.env`, keys, `~/.ssh`, `~/.aws`, credentials files), needs approval, because whatever the model reads goes to the API and into the session file. In judge mode Jev can approve reads outside the project, but secrets and writes to files that run later always ask you. Searches never look inside those files, and `cat`/`head` lose their free pass on such paths. Other bash commands, MCP calls, writes outside the project and writes to files that run later (`.git/`, `Makefile`, `package.json`...) ask first, or go to [Jev](https://www.productcompass.pm/p/jev-decision-model), a small decision model, in `judge` mode. This is a gate, not a sandbox.
 - **`/goal`.** The model keeps working until it calls `goal_done`. The harness then runs `--verify`, and a reviewer subagent with an empty context checks the work. The worker never grades itself.
 - **Cost.** Every request is priced from its token usage with the rates in `models.json` and summed. It isn't shown while you work: `--json` reports it, and `--budget` uses it to stop a long goal run.
 

@@ -1372,7 +1372,7 @@ def test_models_come_from_config(ws, monkeypatch):
 def test_reads_outside_the_project_or_of_secrets_ask_first(ws, tmp_path):
     asked = []
     approver = Approver(interactive=False)
-    approver.ok = lambda kind, detail, private=False: asked.append((kind, detail, private)) or False
+    approver.ok = lambda kind, detail, private=False, secret=False: asked.append((kind, detail, private)) or False
     t = LocalTools(str(ws), approver)
     (ws / "app.py").write_text("x = 1\n")
     (ws / ".env").write_text("TOKEN=secret\n")
@@ -1396,3 +1396,34 @@ def test_safe_commands_lose_their_pass_on_private_paths(ws):
         assert t._names_private(c), c
         assert not t.approver.ok("bash", c, True)  # headless: no pass, so denied
     assert not Approver().pre_approved("grep -r TOKEN .")  # grep -r would read every file
+
+
+def test_the_judge_decides_outside_reads_but_never_secrets(ws, tmp_path):
+    approver = Approver(interactive=False, use_judge=True)
+    approver.judge = lambda kind, detail: ("allow", "the user asked about that folder")
+    t = LocalTools(str(ws), approver)
+    (tmp_path / "README.md").write_text("a project\n")
+    (tmp_path / ".env").write_text("TOKEN=secret\n")
+    assert "a project" in t.read(str(tmp_path / "README.md"))  # outside the project: Jev may allow it
+    with pytest.raises(ToolError, match="denied this read"):
+        t.read(str(tmp_path / ".env"))  # a secret: only you can allow it, and headless nobody does
+    with pytest.raises(ToolError, match="denied this command"):
+        t.bash(f"cat {tmp_path / '.env'}")
+
+
+def test_judge_is_the_default_only_when_its_key_is_set_and_someone_watches(ws, monkeypatch):
+    import mini.cli as cli
+    seen = {}
+    monkeypatch.setattr(cli, "Approver", lambda **kw: seen.update(kw) or Approver(**kw))
+    monkeypatch.setattr(cli, "repl", lambda agent, new: None)
+    monkeypatch.setattr(cli, "Agent", lambda *a, **kw: type("A", (), {"approver": None})())
+    monkeypatch.chdir(ws)
+    for key, argv, judge in [("k", ["mini"], True), ("", ["mini"], False), ("k", ["mini", "-p", "hi"], False),
+                             ("k", ["mini", "--permissions", "ask"], False)]:
+        monkeypatch.setenv("OPENROUTER_API_KEY", key) if key else monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        monkeypatch.setattr(sys, "argv", argv)
+        try:
+            cli.main()
+        except Exception:
+            pass  # the stub agent can't run a prompt; only the approver's settings matter here
+        assert seen["use_judge"] is judge, argv
