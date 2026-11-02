@@ -1,6 +1,6 @@
 # mini
 
-A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,100 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
+A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,130 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
 
 It has a tool loop, five local tools plus web search, sessions you can resume, compaction, Agent Skills, MCP servers, subagents, a `/goal` mode with an independent reviewer, permission prompts with an optional AI judge, and memory kept in markdown files. It's built to show what a harness actually has to do, and which parts you can leave out.
 
@@ -16,7 +16,7 @@ It has a tool loop, five local tools plus web search, sessions you can resume, c
 
 | Harness | Size | Tools | Sessions | Compaction | Permissions | Subagents | Goal mode | MCP |
 |---|---|---|---|---|---|---|---|---|
-| **mini** | 1,100 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
+| **mini** | 1,130 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
 | mini-swe-agent | ~100-line agent class, Python | terminal only | no | no | runs in a container | no | no | no |
 | nanocode | ~250 lines, one Python file | 6 | no | no | no | no | no | no |
 | Pi | ~1,800-line agent loop; ~190K lines in the repo (TypeScript) | 4 (+3 optional) | yes, branching | yes | no, by design | no, by design | no | yes |
@@ -66,6 +66,7 @@ To work on mini itself: `git clone https://github.com/phuryn/mini-harness && cd 
 | `/effort [level]` | Show or change the effort for the next requests |
 | `/permissions [mode]` | `ask`, `judge` or `yes`: who approves risky calls |
 | `/sessions`, `/resume [id]` | List sessions in this directory; resume the latest or one by id prefix |
+| `/context` | How full the context is (the size the API reported for the last request) and what fills it: system prompt, mini's tools, MCP tools, web search, conversation |
 | `/compact` | Replace the history with a summary now |
 | `/dream` | Tidy `memory/`: merge duplicates, drop what's stale |
 | `/goal <objective>` | Keep working until the objective is done; also `resume`, `clear`, `status` |
@@ -120,9 +121,9 @@ Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.
 | Field | Meaning |
 |---|---|
 | `main`, `subagent`, `subagent_cheap` | Default model; the model for subagents and the goal reviewer; the cheaper one the main model may pick for plain reading or search |
-| `prices` | Dollars per million tokens: `input`, `output`, `cache_read` (repeated context, about a tenth of input) and `cache_write` (first time context is cached). mini multiplies each request's token counts by these and adds them up; that's the running total after each turn |
+| `prices` | Dollars per million tokens: `input`, `output`, `cache_read` (repeated context, about a tenth of input) and `cache_write` (first time context is cached). mini multiplies each request's token counts by these and adds them up, for `--json` and the `--budget` limit. It isn't shown while you work |
 | `prices_over_100k` | Optional higher rates for prompts over 100K tokens (Haiku 5.5 has them) |
-| `window` | Context window in tokens (shown in the status line) |
+| `window` | Context window in tokens (shown by `/context`) |
 | `compact_at` | Input tokens at which the conversation is summarized; keep it well below `window`. `MINI_COMPACT_AT` overrides it |
 | `search` | Dollars per web search |
 | `efforts` | Effort levels the model accepts |
@@ -142,7 +143,7 @@ Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.
 - **Tools.** `read`, `write`, `edit`, `bash`, `find`, plus `web_search`, `task` (a subagent with a fresh context that returns only its answer), `ask_user` (a question, optionally with numbered options) and `goal_done`. Errors tell the model what to do next.
 - **Permissions.** Read-only commands and edits inside the project run freely. Other bash commands, MCP calls, writes outside the project and writes to files that run later (`.git/`, `Makefile`, `package.json`...) ask first, or go to [Jev](https://www.productcompass.pm/p/jev-decision-model), a small decision model, in `judge` mode. This is a gate, not a sandbox.
 - **`/goal`.** The model keeps working until it calls `goal_done`. The harness then runs `--verify`, and a reviewer subagent with an empty context checks the work. The worker never grades itself.
-- **Cost.** Every request is priced from its token usage with the rates in `models.json` and summed; the running total shows after each turn.
+- **Cost.** Every request is priced from its token usage with the rates in `models.json` and summed. It isn't shown while you work: `--json` reports it, and `--budget` uses it to stop a long goal run.
 
 ## Left out on purpose
 

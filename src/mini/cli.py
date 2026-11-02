@@ -1,4 +1,4 @@
-"""Talking to it: a readline REPL with ten slash commands, or headless with -p."""
+"""Talking to it: a readline REPL with eleven slash commands, or headless with -p."""
 import argparse
 import json
 import os
@@ -19,6 +19,7 @@ HELP = """/new [model]         start a fresh session, on another model if given 
 /sessions · /resume [id]  list sessions here · resume the latest, or one by id prefix
 /goal <objective>    work until done · /goal resume|clear|status
 /dream               review memory/: merge duplicates, drop what's stale
+/context            how full the context is, and what fills it
 /compact · /exit     summarize the history now · quit (every message is already saved)"""
 
 
@@ -30,24 +31,28 @@ DREAM = ("Review the project memory: read memory/INDEX.md and every file it rout
 class UI:
     def __init__(self, indent="", quiet=False, silent=False):
         """quiet hides streamed text and thinking (subagents); silent hides everything but warnings (--json)."""
-        self.indent, self.quiet, self.silent, self.mode = indent, quiet or silent, silent, None
+        self.indent, self.quiet, self.silent, self.mode, self.fresh = indent, quiet or silent, silent, None, True
 
-    def _out(self, mode, s):
-        if not self.quiet:
-            sys.stdout.write(("\n" if self.mode and self.mode != mode else "") + s)
-            sys.stdout.flush()
-            self.mode = mode
+    def _out(self, mode, s, color=""):
+        if self.quiet or not s:
+            return
+        if self.mode != mode:  # a new block starts on a fresh line; thinking is labeled
+            sys.stdout.write(("" if self.fresh else "\n") + (f"{DIM}thinking: {OFF}" if mode == "think" else ""))
+            s = s.lstrip("\n")
+        sys.stdout.write(color + s + (OFF if color else ""))
+        sys.stdout.flush()
+        self.mode, self.fresh = mode, s.endswith("\n") if s else self.fresh
 
     def text(self, s):
         self._out("text", CONTROL.sub("", s))  # the model's text can't drive the terminal
 
     def thinking(self, s):
-        self._out("think", DIM + CONTROL.sub("", s) + OFF)
+        self._out("think", CONTROL.sub("", s), DIM)
 
     def end_message(self):
-        if self.mode:
+        if self.mode and not self.fresh:
             sys.stdout.write("\n")
-        self.mode = None
+        self.mode, self.fresh = None, True
 
     def _say(self, s):
         if not self.silent:
@@ -71,16 +76,39 @@ class UI:
         return UI(self.indent + "    ", quiet=True, silent=self.silent)
 
 
-def status_line(agent):
-    # right after compaction the size is unknown until the next reply reports it
-    ctx = ("context just compacted" if agent.messages and not agent.last_context
-           else f"{agent.last_context:,} of {agent.window:,} tokens in context")
-    return f"{DIM}[{agent.session.id} · {ctx} · ${agent.cost:.3f} total]{OFF}"
+def context_report(agent) -> str:
+    """The total is what the API reported for the last request. For Claude the fixed parts are measured with the
+    free token-counting endpoint (nothing goes to the model); elsewhere they're estimated at ~4 characters a token."""
+    system, probe = [{"type": "text", "text": agent.system}], [{"role": "user", "content": "x"}]
+    groups = [("local tools", [t for t in agent.tools if "type" not in t and not t["name"].startswith("mcp__")]),
+              ("MCP tools", [t for t in agent.tools if t["name"].startswith("mcp__")]),
+              ("web search", [t for t in agent.tools if "type" in t])]
+    try:
+        if agent.other:
+            raise ValueError
+        count = lambda **kw: agent.client.beta.messages.count_tokens(model=agent.model, messages=probe, **kw).input_tokens
+        before, totals, tools = count(), [count(system=system)], []
+        for _, group in groups:  # each part is measured as what it adds
+            tools += group
+            totals.append(count(system=system, tools=tools) if group else totals[-1])
+        sizes = [b - a for a, b in zip([before] + totals, totals)]
+        how = "measured"
+    except Exception:  # another provider, or no network: estimate
+        sizes = [len(agent.system) // 4] + [len(json.dumps(g)) // 4 if g else 0 for _, g in groups]
+        how = "estimated"
+    names = ["system prompt (instructions, AGENTS.md, memory, skills)"] + [f"{n} ({len(g)})" for n, g in groups]
+    total = agent.last_context  # 0 before the first reply and right after compaction
+    rows = [(s, n) for s, n in zip(sizes, names) if s] + ([(total - sum(sizes), f"conversation ({len(agent.messages)} "
+                                                           "messages)")] if total else [])
+    head = (f"{total:,} of {agent.window:,} tokens ({total / agent.window:.1%}) at the last request" if total
+            else "No request since the session started or was compacted. Fixed parts:")
+    return (f"{head} · compacts at {agent.compact_at():,}\n" + "\n".join(f"  {s:>9,}  {n}" for s, n in rows)
+            + f"\n  ({how}; {agent.model} · session {agent.session.id})")
 
 
 def print_goal(g):
     print("No goal." if not g else CONTROL.sub("", f"Goal [{g['status']}] {g['objective']}\n  {g['turns']} turns "
-          f"({g['max_turns']} per run) · ${g['spent']:.3f}" + (f" · {g['note']}" if g.get("note") else "")))
+          f"({g['max_turns']} per run)" + (f" · {g['note']}" if g.get("note") else "")))
 
 
 def main():
@@ -102,6 +130,13 @@ def main():
     p.add_argument("--budget", type=float, help="with --goal: stop after this many dollars")
     p.add_argument("--json", action="store_true", help="headless: print a JSON result line at the end")
     args = p.parse_args()
+    if os.name == "nt":  # the classic Windows console shows color codes as text until asked to interpret them
+        import ctypes
+        k = ctypes.windll.kernel32
+        for h in (k.GetStdHandle(-11), k.GetStdHandle(-12)):  # stdout, stderr
+            mode = ctypes.c_uint32()
+            if k.GetConsoleMode(h, ctypes.byref(mode)):
+                k.SetConsoleMode(h, mode.value | 0x4)  # ENABLE_VIRTUAL_TERMINAL_PROCESSING
     for s in (sys.stdout, sys.stderr):  # a pipe on Windows defaults to the locale's code page, which can't print →
         s.reconfigure(encoding="utf-8", errors="replace")
     if args.models:  # listing Claude models needs an Anthropic key; the others are always listed
@@ -142,8 +177,6 @@ def main():
             if args.json:
                 print(json.dumps({**result, "session": agent.session.id, "cost": round(agent.cost, 4),
                                   "answer": agent.final_text()}))
-            else:
-                print(status_line(agent))
             if result.get("stop") in ("error", "interrupted", "pause_turn"):  # a script must see the run didn't finish
                 sys.exit(1)
             return
@@ -169,12 +202,13 @@ def repl(agent, new):
         if line == "/exit":
             return
         try:
-            agent = command(agent, line, new) if line else agent
+            if not line:  # an empty Enter just asks again
+                continue
+            agent = command(agent, line, new)
         except KeyboardInterrupt:
             print(f"{YEL}! interrupted{OFF}")
         except Exception as e:  # keep the REPL alive; the session file is still valid
             print(f"{RED}! {type(e).__name__}: {e}{OFF}")
-        print(status_line(agent))
 
 
 def command(agent, line, new):
@@ -183,12 +217,14 @@ def command(agent, line, new):
     cwd = os.getcwd()
     if cmd == "/help":
         print(HELP)
+    elif cmd == "/context":
+        print(context_report(agent))
     elif cmd == "/new":
         agent = new(Session.create(cwd), rest or None)
         print(f"{DIM}new session {agent.session.id}{OFF}")
     elif cmd == "/sessions":
-        for sid, turns, cost, first in list_sessions(cwd):
-            print(f"  {sid}  {turns:>3} prompts  ${cost:>7.3f}  {first}")
+        for sid, turns, _, first in list_sessions(cwd):
+            print(f"  {sid}  {turns:>3} prompts  {first}")
     elif cmd == "/resume":
         s = Session.find(cwd, rest or None)
         if not s:

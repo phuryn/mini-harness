@@ -438,11 +438,13 @@ class Agent:
         return text and [{"role": "user", "content": f"Summary of the conversation so far, written by you:\n\n{text}"},
                          {"role": "assistant", "content": [{"type": "text", "text": "Understood, continuing from it."}]}]
 
+    def compact_at(self) -> int:
+        own = self.other or MODELS.get(self.model, {})  # Claude without its own entry: the default
+        return int(os.environ.get("MINI_COMPACT_AT", own["compact_at"])) if "compact_at" in own else COMPACT_AT
+
     def should_compact(self):
         # after a failed compaction, wait until the context has grown another 20% before retrying
-        own = self.other or MODELS.get(self.model, {})  # Claude without its own entry: the default
-        at = int(os.environ.get("MINI_COMPACT_AT", own["compact_at"])) if "compact_at" in own else COMPACT_AT
-        return self.last_context > max(at, self.compact_failed_at * 1.2)
+        return self.last_context > max(self.compact_at(), self.compact_failed_at * 1.2)
 
     def maybe_compact(self):
         if self.should_compact():

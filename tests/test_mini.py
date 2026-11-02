@@ -786,14 +786,16 @@ def test_negative_timeout_is_clamped(ws):
     assert LocalTools(str(ws), Approver(auto=True)).bash("echo ok", timeout=-1) == "ok"
 
 
-def test_status_line_after_compaction_does_not_claim_zero_tokens(ws):
-    from mini.cli import status_line
+def test_context_report_uses_the_reported_size_and_splits_it(ws):
+    from mini.cli import context_report
     agent, _, _ = make(ws, [])
-    assert "0 of 1,000,000 tokens in context" in status_line(agent)  # a fresh session
-    agent.messages, agent.last_context = [{"role": "assistant", "content": []}], 0
-    assert "0 tokens" not in status_line(agent)
-    agent.last_context = 1234
-    assert "1,234 of 1,000,000 tokens in context" in status_line(agent)
+    assert "No request since" in context_report(agent)  # a fresh session, or just compacted: never "0 tokens"
+    agent.messages, agent.last_context = [{"role": "user", "content": "hi"}], 12_000
+    report = context_report(agent)  # the fake client can't count tokens, so the fixed parts are estimated
+    assert report.startswith("12,000 of 1,000,000 tokens (1.2%)") and "compacts at 150,000" in report
+    split = [int(x.replace(",", "")) for x in re.findall(r"^\s+([\d,]+)\s", report, re.M)]
+    assert sum(split) == 12_000 and "conversation (1 messages)" in report and "estimated" in report
+    assert "$" not in report
 
 
 # --- DeepSeek, the judge, ask_user, effort and permissions ---------------------------------
