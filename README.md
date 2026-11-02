@@ -24,17 +24,38 @@ It has a tool loop, five local tools plus web search, sessions you can resume, c
 
 As of November 2026. Pi is built to be extended; mini is built to be read. Smaller harnesses do real work, but none of the ones above covers crash recovery, an append-only transcript, permissions and checked goals together.
 
-## Quick start
+## Install
+
+mini is a Python program, installed with [uv](https://docs.astral.sh/uv/) (one download; it fetches Python 3.12+ itself if needed).
+
+**macOS / Linux**
 
 ```bash
-git clone git@github.com:phuryn/mini-harness.git ~/mini && cd ~/mini && uv sync
-export ANTHROPIC_API_KEY=sk-ant-...
-cd ~/some/project
-uv run --project ~/mini mini                 # interactive
-uv run --project ~/mini mini -p "explain this repo in five bullets"
+curl -LsSf https://astral.sh/uv/install.sh | sh
+uv tool install git+https://github.com/phuryn/mini-harness
+export ANTHROPIC_API_KEY=sk-ant-...      # add to ~/.zshrc to keep it
 ```
 
-Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/). Optional keys: `DEEPSEEK_API_KEY` (DeepSeek), `OPENROUTER_API_KEY` (the permission judge). On Windows, install [Git for Windows](https://git-scm.com/download/win): the `bash` tool runs its Git Bash (`MINI_BASH` points to another `bash.exe`), and falls back to `cmd.exe` without it. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up.
+**Windows** (PowerShell)
+
+```powershell
+powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex"
+winget install Git.Git                   # the bash tool runs Git Bash
+uv tool install git+https://github.com/phuryn/mini-harness
+setx ANTHROPIC_API_KEY "sk-ant-..."      # then open a new terminal
+```
+
+That puts a `mini` command on your PATH. Update with `uv tool upgrade mini`, remove with `uv tool uninstall mini`.
+
+```bash
+cd ~/some/project
+mini                                      # interactive
+mini -p "explain this repo in five bullets"
+```
+
+Optional keys: `DEEPSEEK_API_KEY` (DeepSeek), `OPENROUTER_API_KEY` (the permission judge). On Windows without Git for Windows, the `bash` tool falls back to `cmd.exe`; `MINI_BASH` points it to another `bash.exe`. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up.
+
+To work on mini itself: `git clone https://github.com/phuryn/mini-harness && cd mini-harness && uv sync && uv run pytest -q`, then `uv run --project <clone> mini` from any folder.
 
 ## Using it
 
