@@ -26,6 +26,7 @@ Requires Python 3.12+ and [uv](https://docs.astral.sh/uv/).
 | `/sessions` | List recent sessions in this directory |
 | `/resume [id]` | Resume the latest session, or one by id prefix |
 | `/compact` | Replace the history with a summary now |
+| `/dream` | Review `memory/`: merge duplicates, drop what's stale, keep the index accurate |
 | `/goal <objective>` | Keep working until the objective is done; also `resume`, `clear`, `status` |
 | `/exit` | Quit. Every message is already saved |
 
@@ -47,14 +48,14 @@ Ctrl-C stops the current turn and keeps the session valid.
 
 | File | Lines | Job |
 |---|---|---|
-| `loop.py` | 438 | Model calls, tool dispatch, subagents, compaction, `/goal`, the judge, providers, cost |
-| `cli.py` | 191 | REPL, slash commands, headless mode |
+| `loop.py` | 455 | Model calls, tool dispatch, subagents, compaction, `/goal`, the judge, providers, cost |
+| `cli.py` | 195 | REPL, slash commands, headless mode |
 | `tools.py` | 223 | read, write, edit, bash, find, approval gate |
 | `ext.py` | 87 | Skills discovery, MCP stdio hub |
 | `session.py` | 67 | JSONL session files |
 | `context.py` | 25 | The frozen system prompt |
 
-That's 1,033 lines of code (not counting blank lines, comments or docstrings), and about 160 of them are prompts, tool descriptions and schemas. It was 999 before the `find` tool, which was worth going over the 1,000-line target for.
+That's 1,053 lines of code (not counting blank lines, comments or docstrings), and about 160 of them are prompts, tool descriptions and schemas. It was 999 before the `find` tool, which was worth going over the 1,000-line target for.
 
 ## How it works
 
@@ -78,7 +79,7 @@ That's 1,033 lines of code (not counting blank lines, comments or docstrings), a
 
 **Approvals.** A short list of commands that can't run programs or write files (`ls`, `cat`, `head`, `tail`, `wc`, `grep`, `diff` and a few more) runs without asking, as long as it contains no shell operators or newlines. `find`, `rg` and `git` aren't on the list, because flags such as `-exec`, `--pre` and `--output` can run programs or write files. Any other bash command asks first. So does any write outside the working directory (every write, if you start mini in your home folder), and any write to a file that something else will run later: dot-folders such as `.git/` (git config can make `git status` run commands), `mcp.json`, `conftest.py`, `Makefile`, `package.json`, `pyproject.toml`, `setup.py`, any existing executable file, `GNUmakefile`, `justfile`, `tox.ini`, `noxfile.py`, and files named `HEAD` or `config`, because git treats any folder with those plus `objects/` and `refs/` as a repository. That list is a denylist of common runners, not a guarantee. The approval prompt starts with a soft terminal reset, shows the action in rows that each start with a `│` marker (so file content can't imitate the prompt), and repeats the path (for a write) or the kind of call, plus the row count, next to the answer. Inside it, everything outside plain ASCII is escaped, a backslash included, and runs of 3+ spaces in a command (16+ in file content) or of blank lines are shown as counts. An action taller than the screen (at most 40 rows) is denied as too long to review; a long write to a protected file has to start short and grow with `edit`, or run under `/permissions yes`. Approvals are one at a time. `--allow` pre-approves bash commands and MCP tools by prefix; `/permissions` switches who approves everything. The model's own streamed text, thinking, warnings, goal notes and questions have terminal control codes stripped, and MCP servers' own output goes to a log file, so nothing can change how the next prompt is drawn. The judge receives the action as one quoted string, and anything too long to review (over 4,000 characters) is denied. The check ignores case, because macOS file systems do. Every MCP tool call asks first. Headless mode denies anything not matched by `--allow`, which compares whole words, so `--allow "python3 -m pytest"` doesn't approve `python3 -c ...`. Writes elsewhere in the project are free, so allowing a test runner means the model can run code it wrote. `read` isn't restricted to the project either. This gate is not a sandbox.
 
-**Memory and instructions.** At session start mini loads `AGENTS.md` (and only that file) plus `memory/INDEX.md`, which routes to area files such as `memory/decisions.md`. The model reads area files when a task touches them and updates them with `edit`. Changes take effect in the next session, because the prompt is frozen within a session.
+**Memory and instructions.** At session start mini loads `AGENTS.md` (and only that file) plus `memory/INDEX.md`, which routes to area files such as `memory/decisions.md`. The model reads area files when a task touches them and updates them with `edit`, merging a new fact into what's there instead of appending, so the files stay short. `/dream` asks for a full review of `memory/` on demand. Changes take effect in the next session, because the prompt is frozen within a session.
 
 **Skills.** mini looks for `skills/*/SKILL.md`, `.agents/skills/*/SKILL.md` and `~/.mini/skills/*/SKILL.md`. Each skill's name and description go into the system prompt. When a task matches a skill, the model reads its file with `read`. No special tool is needed.
 
@@ -92,7 +93,7 @@ Their tools appear as `mcp__<server>__<tool>`, and each call asks for approval u
 
 **Subagents.** The `task` tool runs the same loop with a fresh, empty history, a short prompt of its own, `read`, `find`, `bash` and `web_search`, and a cheaper model (Sonnet 5.5, or Haiku 5.5 when asked). The subagent is told not to change files, and its `bash` calls go through the same approval gate. Only the subagent's final answer returns to the main conversation. Its full transcript is saved next to the parent session as `<id>-sub-<hex>.jsonl`. The point of a subagent is to keep the main context clean. Speed isn't the goal.
 
-**`/goal`.** This sets an objective and keeps the model going. After each turn the harness either sends "continue", or, if the model called `goal_done`, runs the `--verify` command and accepts the goal only if it passes. A failed check goes back to the model with its output. The loop also stops when the model writes `BLOCKED:` because it needs you, at the turn limit, at the budget, or on Ctrl-C. Goal state is saved in the session, so `/resume` followed by `/goal resume` picks it back up. When a goal stops, the model is told that goal mode is off, even across a restart. `--verify` runs in your shell, so a verify command that runs the project's tests also runs code the model wrote.
+**`/goal`.** This sets an objective and keeps the model going. After each turn the harness either sends "continue", or, if the model called `goal_done`, checks the claim without trusting it: it runs the `--verify` command, if any, and then has a reviewer subagent with an empty context (the same machinery as `task`) inspect the working directory against the objective and the model's evidence. The goal counts as done only when the reviewer ends with `VERDICT: DONE`. A failed check or the reviewer's objections go back to the model. The loop also stops when the model writes `BLOCKED:` because it needs you, at the turn limit, at the budget, or on Ctrl-C. Goal state is saved in the session, so `/resume` followed by `/goal resume` picks it back up. When a goal stops, the model is told that goal mode is off, even across a restart. `--verify` runs in your shell, so a verify command that runs the project's tests also runs code the model wrote.
 
 **Models and providers.** `--model` (or `/new <model>`) picks the model for a session, and `mini --models` lists what your key can use. The model stays fixed for the whole session, because a switch would drop the replayed thinking. Effort can change at any time with `/effort`: it's a setting on each request, not part of the history. Each provider has its own levels (Claude: low to max; DeepSeek: low, high, max).
 
@@ -107,7 +108,7 @@ Keys stay in environment variables, never on the command line, where shell histo
 
 **The permission judge.** With `--permissions judge` (or `/permissions judge`), a risky call goes to [Jev](https://www.productcompass.pm/p/jev-decision-model), a decision model on OpenRouter, before it would reach you. Jev answers allow or deny with a confidence. Below 0.8 the call asks you, and in headless mode it's denied. If Jev can't be reached, the call is denied. A denial goes back to the model with the reason, so it can change course. Jev sees your own messages, your answers to `ask_user` (not the model's questions), the active goal, and the whole action, nothing else: not the model's reasoning, not tool output, and not messages the harness writes, such as test output from `--verify`, because those can carry instructions aimed at whoever reads them. An action too long to review (over 4,000 characters) is denied before Jev sees it. Writes through the write and edit tools that need approval (outside the project, or files that run later) always go to you, never to Jev. Bash commands go to Jev, including ones that write files: its instructions say to deny writes to files that run later, but that is a model's judgment, and a command can write a file without naming it (a patch, a script). Use `ask` mode when that matters. A check costs about $0.00002. It's still a model judging a model, not a sandbox.
 
-**Asking you.** The `ask_user` tool lets the model ask a question mid-task. In headless runs nobody answers, so the model is told to make its best assumption and say what it assumed.
+**Asking you.** The `ask_user` tool lets the model ask a question mid-task, open-ended or with numbered options; you type a number or your own answer. In headless runs nobody answers, so the model is told to make its best assumption and say what it assumed.
 
 **Cost.** Each turn prints the running total, using the cache-read rates. Cache hits come from one top-level `cache_control` marker. Because the prefix never changes, the cache stays warm.
 

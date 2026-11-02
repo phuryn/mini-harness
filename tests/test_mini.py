@@ -176,6 +176,7 @@ def test_goal_loop_verifies_before_accepting(ws):
         reply(tool("goal_done", {"evidence": "trust me"}), stop="tool_use"), reply(text("claimed")),
         reply(tool("write", {"path": "done.txt", "content": "x"}), stop="tool_use"),
         reply(tool("goal_done", {"evidence": "wrote done.txt"}), stop="tool_use"), reply(text("now done")),
+        reply(text("done.txt exists.\nVERDICT: DONE"), model="claude-sonnet-5-5"),  # the reviewer
     ]
     agent, client, _ = make(ws, script)
     g = agent.set_goal("create done.txt", verify="test -f done.txt")
@@ -184,7 +185,7 @@ def test_goal_loop_verifies_before_accepting(ws):
     assert first[0]["role"] == "user" and first[1]["role"] == "system" and "Goal mode is on" in first[1]["content"]
     retry = [m for m in client.requests[2]["messages"] if m["role"] == "user" and isinstance(m["content"], str)]
     assert "failed" in retry[-1]["content"]
-    assert_append_only(client.requests)
+    assert_append_only(client.requests[:-1])  # the last request is the reviewer's own conversation
 
 
 def test_goal_stops_when_blocked_and_on_turn_limit(ws):
@@ -392,11 +393,12 @@ def test_fallback_partial_is_not_run_or_echoed(ws, monkeypatch):
 def test_goal_rules_restated_on_resume_after_compaction(ws):
     block = {"type": "compaction", "content": "S", "signature": "c"}
     agent, client, _ = make(ws, [reply(text("BLOCKED: which?")), reply(block, stop="compaction"),
-                                 reply(tool("goal_done", {"evidence": "e"}), stop="tool_use"), reply(text("done"))])
+                                 reply(tool("goal_done", {"evidence": "e"}), stop="tool_use"), reply(text("done")),
+                                 reply(text("VERDICT: DONE"))])
     agent.set_goal("ship it")
     agent.compact()
     assert agent.run_goal()["status"] == "done"
-    sys_msgs = [m for m in client.requests[-1]["messages"] if m["role"] == "system"]
+    sys_msgs = [m for m in client.requests[-2]["messages"] if m["role"] == "system"]
     assert sys_msgs and "ship it" in sys_msgs[-1]["content"]
 
 
@@ -1219,3 +1221,33 @@ def test_find_survives_a_broken_symlink(ws):
     (ws / "dead.py").symlink_to(ws / "missing.py")
     (ws / "ok.py").write_text("hit\n")
     assert LocalTools(str(ws), Approver(interactive=False)).find("*.py", "hit") == "ok.py:1: hit"
+
+
+def test_goal_needs_a_fresh_reviewer_to_agree(ws):
+    script = [reply(tool("goal_done", {"evidence": "all good"}), stop="tool_use"), reply(text("claimed")),
+              reply(text("README.md is missing.\nVERDICT: NOT DONE")),  # reviewer, fresh context
+              reply(tool("goal_done", {"evidence": "added README.md"}), stop="tool_use"), reply(text("again")),
+              reply(text("VERDICT: DONE"))]
+    agent, client, _ = make(ws, script)
+    g = agent.set_goal("write a README")
+    assert g["status"] == "done" and g["turns"] == 2
+    review = client.requests[2]
+    assert review["messages"][0]["content"].startswith("An agent says it met the goal")
+    assert len(review["messages"]) == 1 and "goal_done" not in [x["name"] for x in review["tools"]]
+    worker = [m for m in client.requests[3]["messages"] if m["role"] == "user" and isinstance(m["content"], str)]
+    assert "README.md is missing" in worker[-1]["content"]
+    assert_append_only([client.requests[0], client.requests[1], client.requests[3], client.requests[4]])
+
+
+def test_ask_user_offers_numbered_options(ws, monkeypatch):
+    q = tool("ask_user", {"question": "Which db?", "options": ["postgres", "sqlite"]})
+    agent, client, _ = make(ws, [reply(q, stop="tool_use"), reply(text("ok")), reply(q, stop="tool_use"), reply(text("ok"))])
+    agent.approver.interactive = True
+    shown = []
+    monkeypatch.setattr("builtins.input", lambda p: shown.append(p) or "2")
+    agent.turn("set it up")
+    assert "1. postgres" in shown[0] and "2. sqlite" in shown[0]
+    assert client.requests[1]["messages"][-1]["content"][0]["content"] == "sqlite"
+    monkeypatch.setattr("builtins.input", lambda p: "mysql, actually")
+    agent.turn("again")
+    assert client.requests[3]["messages"][-1]["content"][0]["content"] == "mysql, actually"

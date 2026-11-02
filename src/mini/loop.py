@@ -61,6 +61,10 @@ GOAL_RULES = (
     "fully met and you have checked it, and put the evidence (commands run, results) in the call. {verify}"
     "If you cannot make progress without the user, end your message with a line that starts with BLOCKED: and the question.")
 
+REVIEW = ("An agent says it met the goal below. Check whether it really did, in the working directory: read the files "
+          "and run read-only checks. Don't take its word for anything.\n\nGoal: {objective}\n\nIts evidence: {claim}\n\n"
+          "End with one line, VERDICT: DONE or VERDICT: NOT DONE, and before it say what is missing, if anything.")
+
 GOAL_OFF = "Goal mode is off (status: {status}). Earlier goal instructions no longer apply unless the user resumes the goal."
 
 EXTRA_SCHEMAS = {
@@ -75,12 +79,15 @@ EXTRA_SCHEMAS = {
                  ["prompt"])},
     "ask_user": {
         "description": "Ask the user a question and wait for the answer. Use it only when you can't go on without "
-                       "their decision. In headless runs nobody answers, and you'll be told to assume.",
-        **schema({"question": {"type": "string"}}, ["question"])},
+                       "their decision. When the answer is a choice, list the options: the user picks a number or "
+                       "types their own answer. In headless runs nobody answers, and you'll be told to assume.",
+        **schema({"question": {"type": "string"},
+                  "options": {"type": "array", "items": {"type": "string"}, "description": "Choices, if any"}},
+                 ["question"])},
     "goal_done": {
         "description": "Declare the active goal complete. Only call it when the goal is fully met and you have "
-                       "checked it. If the user set a verify command, the harness runs it and sends you its output "
-                       "if it fails.",
+                       "checked it. The harness then runs the user's verify command, if any, and has a reviewer "
+                       "that can't see this conversation check the work; you get their objections if they disagree.",
         **schema({"evidence": {"type": "string", "description": "What you ran and what it showed"}}, ["evidence"])},
 }
 
@@ -347,7 +354,10 @@ class Agent:
             if not self.approver.interactive:
                 return "Nobody can answer: this is a headless run. Assume what's most reasonable, say so, go on."
             self.ui.end_message()
-            answer = input(f"\033[33m  ? {CONTROL.sub('', args['question']).replace(chr(0x2502), '|')}\n  > \033[0m").strip() or "(no answer)"
+            opts = args.get("options") or []
+            q = args["question"] + "".join(f"\n    {i}. {o}" for i, o in enumerate(opts, 1))
+            answer = input(f"\033[33m  ? {CONTROL.sub('', q).replace(chr(0x2502), '|')}\n  > \033[0m").strip() or "(no answer)"
+            answer = opts[int(answer) - 1] if answer.isdigit() and 0 < int(answer) <= len(opts) else answer
             self.session.append("answer", q=args["question"], a=answer)  # the judge counts it as the user's words
             return answer
         if name == "goal_done":
@@ -479,7 +489,7 @@ class Agent:
                     if ok:
                         g["status"], g["note"] = "done", self.goal_claim[:500]
                         break
-                    message = f"The harness ran `{g['verify']}` and it failed:\n{out[-4000:]}\nKeep working."
+                    message = f"The goal isn't accepted yet.\n{out}\nKeep working."
                 elif "BLOCKED:" in self.final_text():
                     g["status"], g["note"] = "paused", "blocked: waiting for the user"
                     break
@@ -500,12 +510,19 @@ class Agent:
         return g
 
     def verify(self):
+        """The worker doesn't grade itself: the verify command must pass, then a reviewer with a fresh context agrees."""
         cmd = self.goal.get("verify")
-        if not cmd:
-            return True, ""
-        self.ui.note(f"verifying: {cmd}")
+        if cmd:
+            self.ui.note(f"verifying: {cmd}")
+            try:
+                code, out, err = run_shell(cmd, self.cwd, 600)
+            except subprocess.TimeoutExpired:
+                return False, f"`{cmd}` timed out after 600s."
+            if code:
+                return False, f"The harness ran `{cmd}` and it failed:\n{(out + err)[-4000:]}"
+        self.ui.note("a fresh reviewer is checking the goal")
         try:
-            code, out, err = run_shell(cmd, self.cwd, 600)
-        except subprocess.TimeoutExpired:
-            return False, "The verify command timed out after 600s."
-        return code == 0, out + err
+            review = self.run_subagent(REVIEW.format(objective=self.goal["objective"], claim=self.goal_claim[:4000]))
+        except ToolError as e:
+            return False, f"The reviewer couldn't finish: {e}"
+        return "VERDICT: DONE" in review[-300:], f"A reviewer checked and disagrees:\n{review[-4000:]}"

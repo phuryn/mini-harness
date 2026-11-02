@@ -1,4 +1,4 @@
-"""Talking to it: a readline REPL with nine slash commands, or headless with -p."""
+"""Talking to it: a readline REPL with ten slash commands, or headless with -p."""
 import argparse
 import json
 import os
@@ -18,7 +18,12 @@ HELP = """/new [model]         start a fresh session, on another model if given 
 /permissions [mode]  ask, judge or yes: who approves risky calls
 /sessions · /resume [id]  list sessions here · resume the latest, or one by id prefix
 /goal <objective>    work until done · /goal resume|clear|status
+/dream               review memory/: merge duplicates, drop what's stale
 /compact · /exit     summarize the history now · quit (every message is already saved)"""
+
+
+DREAM = ("Review the project memory: read memory/INDEX.md and every file it routes to. Merge duplicates, delete what "
+         "is stale or contradicted by the code, tighten the wording, and keep INDEX.md accurate. Then list what you changed.")
 
 
 class UI:
@@ -197,6 +202,8 @@ def command(agent, line, new):
             print(f"{agent.model} has no effort {rest}")
         agent.effort = rest if rest in agent.efforts else agent.effort
         print(f"effort {agent.effort} · {agent.model} takes {', '.join(agent.efforts)}")
+    elif cmd == "/dream":
+        agent.turn(DREAM)
     elif cmd == "/compact":
         agent.compact()
     elif cmd == "/goal":
