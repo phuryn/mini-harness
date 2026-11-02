@@ -67,7 +67,7 @@ EXTRA_SCHEMAS = {
     "task": {
         "description": "Delegate a self-contained research or reading task to a subagent. It starts with an empty "
                        "context: it can't see this conversation, so the prompt must include every path, fact and "
-                       "constraint it needs. It has read, bash and web_search, is told not to change files (its "
+                       "constraint it needs. It has read, find, bash and web_search, is told not to change files (its "
                        "bash calls need approval like yours), and returns only its final answer.",
         **schema({"prompt": {"type": "string"},
                   "model": {"type": "string", "enum": ["claude-sonnet-5-5", "claude-haiku-5-5"],
@@ -127,12 +127,12 @@ class Agent:
             self.model = model or (SUB_MODEL if sub else MAIN_MODEL)
             other = self.model in OTHER
             need_key(self.model, client)
-            names = ["read", "bash"] if sub else ["read", "write", "edit", "bash"]
+            names = ["read", "find", "bash"] if sub else ["read", "write", "edit", "bash", "find"]
             self.tools = [{"name": x, **SCHEMAS[x]} for x in names]
             if not sub:
                 self.tools += [{"name": x, **s} for x, s in EXTRA_SCHEMAS.items()]
                 if other:  # one model, so subagents run on it too
-                    self.tools[4] = {"name": "task", **schema({"prompt": {"type": "string"}}, ["prompt"]),
+                    self.tools[5] = {"name": "task", **schema({"prompt": {"type": "string"}}, ["prompt"]),
                                      "description": EXTRA_SCHEMAS["task"]["description"]}
                 self.tools += hub.schemas if hub else []
             self.tools.append(WEB_SEARCH)
@@ -335,7 +335,7 @@ class Agent:
         return results, interrupted
 
     def dispatch(self, name, args):
-        if name in ("read", "write", "edit", "bash"):
+        if name in ("read", "write", "edit", "bash", "find"):
             try:
                 return getattr(self.local, name)(**args)
             except TypeError as e:

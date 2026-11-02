@@ -1,9 +1,10 @@
-"""Four local tools (read, write, edit, bash) plus the approval gate.
+"""Five local tools (read, write, edit, bash, find) plus the approval gate.
 
 A tool is a JSON schema the model sees and a Python function the harness runs.
 `edit` refuses to touch a file that changed since the model last read it.
 """
 import contextlib
+import fnmatch
 import os
 import re
 import shlex
@@ -189,6 +190,20 @@ class LocalTools:
         self.seen[p] = p.stat().st_mtime
         return f"Edited {p} ({n if replace_all else 1} replaced)"
 
+    def find(self, name: str = "*", contains: str = "", path: str = ".") -> str:
+        """Search with no shell, so it never needs approval. Skips dot-folders and dependency folders."""
+        root, rx, hits = self._path(path), re.compile(contains) if contains else None, []  # bad regex: re.error
+        for d, dirs, files in os.walk(root):
+            dirs[:] = sorted(x for x in dirs if not x.startswith(".") and x not in ("node_modules", "__pycache__"))
+            for p in (Path(d, f) for f in sorted(fnmatch.filter(files, name))):
+                text = p.read_text(errors="replace") if rx and p.is_file() and p.stat().st_size < 5_000_000 else ""
+                if not rx or "\0" not in text[:8000]:  # skip binaries
+                    hits += [f"{p.relative_to(root)}:{i}: {x[:300]}" for i, x in enumerate(text.splitlines(), 1)
+                             if rx.search(x)] if rx else [str(p.relative_to(root))]
+            if len(hits) >= 500:
+                return "\n".join(hits[:500]) + "\n[stopped at 500 results: narrow the search]"
+        return "\n".join(hits) or "[no matches]"
+
     def bash(self, command: str, timeout: int = 120) -> str:
         if not self.approver.ok("bash", command):
             raise ToolError("User denied this command." + self.approver.reason)
@@ -229,13 +244,19 @@ SCHEMAS = {
                  ["path", "old", "new"])},
     "bash": {
         "description": "Run a shell command in the working directory and get stdout, stderr and the exit code. Use "
-                       "it for search (grep, find), git, tests and builds. There is no terminal: commands get no "
+                       "it for git, tests and builds; search with find. There is no terminal: commands get no "
                        "input, so interactive programs end at once. Output over 30,000 characters is cut in the "
                        "middle. Most commands ask the user first and can be denied; plain reads such as ls, cat, "
                        "grep and head without pipes or redirects run without asking.",
         **schema({"command": {"type": "string"},
                   "timeout": {"type": "integer", "description": "Seconds before the command is killed (default 120)"}},
                  ["command"])},
+    "find": {
+        "description": "Find files by name, or lines by content (path:line: text), under a folder. Read-only, never "
+                       "asks the user. Skips dot-folders, node_modules and __pycache__. Stops at 500 results.",
+        **schema({"name": {"type": "string", "description": "Filename glob, such as *.py or test_*; default *"},
+                  "contains": {"type": "string", "description": "Python regex to match lines; omit to list files"},
+                  "path": {"type": "string", "description": "Folder to search (default the working directory)"}}, [])},
 }
 
 WEB_SEARCH = {"type": "web_search_20260209", "name": "web_search"}

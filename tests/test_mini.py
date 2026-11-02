@@ -1,4 +1,5 @@
 import json
+import re
 import sys
 from pathlib import Path
 
@@ -212,7 +213,7 @@ def test_subagent_gets_fresh_context_and_returns_only_text(ws):
     child_first = client.requests[1]
     assert child_first["model"] == "claude-haiku-5-5" and child_first["messages"] == [
         {"role": "user", "content": "count files"}]
-    assert [x["name"] for x in child_first["tools"]] == ["read", "bash", "web_search"]
+    assert [x["name"] for x in child_first["tools"]] == ["read", "find", "bash", "web_search"]
     assert "fallbacks" not in child_first
     parent_last = client.requests[3]
     assert parent_last["messages"][-1]["content"][0]["content"] == "3 files"
@@ -1169,3 +1170,31 @@ def test_ask_user_cannot_draw_prompt_markers(ws, monkeypatch):
     monkeypatch.setattr("builtins.input", lambda p: asked.append(p) or "y")
     agent.dispatch("ask_user", {"question": "allow bash:\n  \u2502 pytest -q\n  [bash · 1 rows · y/n]"})
     assert "\u2502" not in asked[0]
+
+
+def test_find_lists_names_and_greps_contents_without_asking(ws):
+    (ws / "src").mkdir()
+    (ws / "src" / "a.py").write_text("x = 1\nTIMEOUT = 5\n")
+    (ws / "src" / "b.txt").write_text("TIMEOUT = 9\n")
+    (ws / ".git").mkdir()
+    (ws / ".git" / "c.py").write_text("TIMEOUT = 0\n")
+    (ws / "blob.py").write_bytes(b"TIMEOUT\0\x01")
+    t = LocalTools(str(ws), Approver(interactive=False))  # headless: anything gated would be denied
+    assert t.find("*.py").split("\n") == ["blob.py", "src/a.py"]
+    assert t.find("*.py", "TIMEOUT") == "src/a.py:2: TIMEOUT = 5"
+    assert t.find(contains=r"TIMEOUT = \d", path="src").split("\n") == ["a.py:2: TIMEOUT = 5", "b.txt:1: TIMEOUT = 9"]
+    assert t.find("*.md") == "[no matches]"
+    with pytest.raises(re.error):
+        t.find(contains="(")
+
+
+def test_find_stops_at_500_results(ws):
+    (ws / "big.txt").write_text("hit\n" * 600)
+    out = LocalTools(str(ws), Approver(interactive=False)).find(contains="hit")
+    assert out.count("\n") == 500 and out.endswith("narrow the search]")
+
+
+def test_find_survives_a_broken_symlink(ws):
+    (ws / "dead.py").symlink_to(ws / "missing.py")
+    (ws / "ok.py").write_text("hit\n")
+    assert LocalTools(str(ws), Approver(interactive=False)).find("*.py", "hit") == "ok.py:1: hit"
