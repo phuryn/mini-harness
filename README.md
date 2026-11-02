@@ -55,7 +55,7 @@ Ctrl-C stops the current turn and keeps the session valid.
 |---|---|
 | `-p "..."` | Run one prompt headless and print the answer (`--json` for one JSON line with status and cost) |
 | `-c` / `-r <id>` | Continue the latest session, or resume one |
-| `--model`, `--effort` | Model (default `claude-opus-5-5`) and effort (default `high`); `--models` lists what your keys can use |
+| `--model`, `--effort` | Model (default: `main` in `models.json`) and effort (default `high`); `--models` lists what your keys can use |
 | `--allow "python3 -m pytest"` | Pre-approve bash commands starting with these words, or MCP tools starting with this prefix (repeatable). Headless mode denies everything else |
 | `--permissions ask\|judge\|yes` | Who approves risky calls: you, the Jev judge, or nobody (`yes`: only in a sandbox) |
 | `--goal "..." --verify "pytest -q"` | Headless goal mode; done only when the verify command passes and a fresh reviewer agrees |
