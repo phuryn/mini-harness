@@ -17,15 +17,38 @@ It has a tool loop, five local tools plus web search, sessions you can resume, c
 
 ## How it compares
 
-| Harness | Size | Tools | Sessions | Compaction | Permissions | Subagents | Goal mode | MCP |
-|---|---|---|---|---|---|---|---|---|
-| **mini** | 1,200 lines, Python | 5 + web search, subagent, ask user | yes | yes | yes, plus judge | yes | yes, with reviewer | yes |
-| mini-swe-agent | ~100-line agent class, Python | terminal only | no | no | runs in a container | no | no | no |
-| nanocode | ~250 lines, one Python file | 6 | no | no | no | no | no | no |
-| Pi | ~1,800-line agent loop; ~190K lines in the repo (TypeScript) | 4 (+3 optional) | yes, branching | yes | no, by design | no, by design | no | yes |
-| Claude Code, Codex CLI | full products | many | yes | yes | yes | yes | yes | yes |
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/compare-dark.png">
+  <img src="docs/img/compare-light.png" alt="mini compared with mini-swe-agent, nanocode, Pi, Codex CLI and Claude Code on code size, dependencies, tools, sessions, compaction, permissions, subagents, goal mode and MCP. The same table is below as text.">
+</picture>
 
 As of November 2026. Pi is built to be extended; mini is built to be read. Smaller harnesses do real work, but none of the ones above covers crash recovery, an append-only transcript, permissions and checked goals together.
+
+<details>
+<summary>The same table as text</summary>
+
+| | **mini** | mini-swe-agent | nanocode | Pi | Codex CLI | Claude Code |
+|---|---|---|---|---|---|---|
+| Code | ~1,200 lines (Python) | ~4,000 lines (Python) | ~220 lines (one Python file) | ~115K lines (TypeScript; loop alone ~1,800) | ~1.4M lines (Rust) |  |
+| Dependencies | 2 (anthropic, mcp) | 14 (litellm, pydantic, textual...) | 0 (standard library) | 22 (5 are its own packages) | many |  |
+| Tools | 5 + web search (subagent, ask user) | terminal only | 6 | 4 (+3 optional) | many | many |
+| Sessions | yes | no | no | yes, branching | yes | yes |
+| Compaction | yes | no | no | yes | yes | yes |
+| Permissions | yes, plus judge | runs in a container | no | no, by design | yes | yes |
+| Subagents | yes | no | no | no, by design | yes | yes |
+| Goal mode | yes, with reviewer | no | no | no | yes | yes |
+| MCP | yes | no | no | yes | yes | yes |
+
+</details>
+
+### On Bug Hunt Bench
+
+[Bug Hunt Bench](https://bughunt.productcompass.pm/) plants 105 bugs in two codebases and counts how many an agent fixes. With one model for every harness, DeepSeek V4.1 Flash at high effort on DeepSeek's own API, [mini 0.9.0](https://github.com/phuryn/mini-harness/tree/c936132) fixed 34.2 on average over five runs, between Claude Code (36.4) and Codex CLI (33.2), in 71 minutes and for $0.86 a run.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bug-hunt-bench-dark.png">
+  <img src="docs/img/bug-hunt-bench-light.png" alt="Bug Hunt Bench, DeepSeek V4.1 Flash 1017 at high effort, mean planted bugs fixed over five runs: Pi 40.4, Grok Build CLI 40.4, DeepSeek Harness 39.2, OpenCode 2.0 38.6, OpenCode 36.6, Claude Code 36.4, Mini Harness 34.2, Codex CLI 33.2, Hermes Agent 32.0, Kilo Code 31.8.">
+</picture>
 
 ## Install
 
