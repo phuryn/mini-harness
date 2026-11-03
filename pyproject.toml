@@ -1,6 +1,6 @@
 [project]
 name = "mini"
-version = "0.1.0"
+version = "1.0.0"
 description = "A minimal agent harness: loop, tools, sessions, compaction, skills, MCP, subagents, /goal."
 authors = [
     { name = "phuryn", email = "pawel.huryn@gmail.com" }
