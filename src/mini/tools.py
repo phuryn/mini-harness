@@ -200,6 +200,8 @@ class LocalTools:
     def _words(self, command: str) -> list[Path] | None:
         """The paths a command names (every word after the first that isn't a flag); None if it can't be split."""
         try:
+            if os.name == "nt":  # shlex eats the backslashes in C:\\x\\.env, hiding the secret's name: read them as /
+                command = command.replace("\\", "/")
             return [self._path(w) for w in shlex.split(command)[1:] if not w.startswith("-")]
         except ValueError:
             return None
