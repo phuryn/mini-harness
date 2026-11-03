@@ -19,7 +19,7 @@ It has a tool loop, five local tools plus web search, sessions you can resume, c
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/compare-dark.png">
-  <img src="docs/img/compare-light.png" alt="mini compared with mini-swe-agent, nanocode, Pi, Codex CLI and Claude Code on code size, dependencies, tools, sessions, compaction, permissions, subagents, goal mode and MCP. The same table is below as text.">
+  <img src="docs/img/compare-light.png" alt="Mini Harness (this repo) compared with mini-swe-agent, nanocode, Pi, Codex CLI and Claude Code on code size, dependencies, tools, sessions, compaction, permissions, subagents, goal mode and MCP. The same table is below as text.">
 </picture>
 
 As of November 2026. Pi is built to be extended; mini is built to be read. Smaller harnesses do real work, but none of the ones above covers crash recovery, an append-only transcript, permissions and checked goals together.
@@ -27,17 +27,18 @@ As of November 2026. Pi is built to be extended; mini is built to be read. Small
 <details>
 <summary>The same table as text</summary>
 
-| | **mini** | mini-swe-agent | nanocode | Pi | Codex CLI | Claude Code |
+| | **Mini Harness** | mini-swe-agent | nanocode | Pi | Codex CLI | Claude Code |
 |---|---|---|---|---|---|---|
 | Code | ~1,200 lines (Python) | ~4,000 lines (Python) | ~220 lines (one Python file) | ~115K lines (TypeScript; loop alone ~1,800) | ~1.4M lines (Rust) |  |
-| Dependencies | 2 (anthropic, mcp) | 14 (litellm, pydantic, textual...) | 0 (standard library) | 22 (5 are its own packages) | many |  |
-| Tools | 5 + web search (subagent, ask user) | terminal only | 6 | 4 (+3 optional) | many | many |
-| Sessions | yes | no | no | yes, branching | yes | yes |
+| Dependencies | 2 (anthropic, mcp) | 14 (litellm, pydantic, textual...) | 0 (standard library) | 22 (5 are its own packages) | 77 (52 are its own crates) |  |
+| Tools | 5 + web search (+ subagent, ask user, goal done) | bash only | 6 | 4 (+6 optional) | many | many |
+| Sessions | yes | no | no | yes, branching | yes, branching | yes, branching |
 | Compaction | yes | no | no | yes | yes | yes |
-| Permissions | yes, plus judge | runs in a container | no | no, by design | yes | yes |
+| Permissions | yes, plus judge | yes, confirm mode; container optional | no | no, docs advise a container | yes | yes |
 | Subagents | yes | no | no | no, by design | yes | yes |
-| Goal mode | yes, with reviewer | no | no | no | yes | yes |
+| Goal mode | yes, verify command + reviewer | no | no | no | yes, the worker marks it done | yes, a judge model, no tools |
 | MCP | yes | no | no | yes | yes | yes |
+| Skills | yes | no | no | yes | yes | yes |
 
 </details>
 
