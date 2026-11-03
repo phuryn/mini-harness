@@ -1,8 +1,5 @@
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow?style=flat-square)](https://github.com/phuryn/mini-harness/blob/main/LICENSE.md)
 [![Tests](https://github.com/phuryn/mini-harness/actions/workflows/tests.yml/badge.svg)](https://github.com/phuryn/mini-harness/actions/workflows/tests.yml)
-[![Release](https://img.shields.io/badge/release-v1.0.0-blue)](https://github.com/phuryn/mini-harness/releases/tag/v1.0.0)
-![Python 3.12+](https://img.shields.io/badge/python-3.12%2B-blue)
-![Platforms](https://img.shields.io/badge/platforms-macOS%20%7C%20Linux%20%7C%20Windows-lightgrey)
-![Size](https://img.shields.io/badge/size-~1%2C200%20lines-green)
 
 # mini
 
