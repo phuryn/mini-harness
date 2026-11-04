@@ -63,7 +63,7 @@ As of November 2026. Pi is built to be extended; mini is built to be read.
   <img src="docs/img/terminal-bench-light.png" alt="Terminal-Bench 2.0, Claude Haiku 5.5 at high effort, mean tasks passed of 10 over five runs, with agent minutes and cost per run: Pi 8.8 (35 min, $0.09), Claude Code 8.4 (33 min, $0.19), OpenCode 8.2 (36 min, $0.11), Mini Harness 8.2 (33 min, $0.11), Terminus 2 8.0 (51 min, $0.12), mini-swe-agent 7.8 (40 min, $0.19), Kilo Code 7.6 (39 min, $0.13), Hermes Agent 7.4 (47 min, about $0.11, estimated from tokens).">
 </picture>
 
-On DeepSeek V4.1 Flash at high effort, on DeepSeek's own API with the same tasks, harness versions and five runs, mini 1.0.0 passed 7.4, tied with Hermes Agent for last. OpenCode led with 8.6, then Claude Code (8.4), Pi and Terminus 2 (8.2). One task, build-cython-ext, failed in all five runs on both models: the agent skipped two test files and called the build done.
+On DeepSeek V4.1 Flash at high effort, on DeepSeek's own API with the same tasks, harness versions and five runs, mini 1.0.0 passed 7.4, tied with Hermes Agent for last. OpenCode led with 8.6, then Claude Code (8.4), Pi and Terminus 2 (8.2). On both models, build-cython-ext failed in every run for the three harnesses installed with uv (Mini Harness, mini-swe-agent, Hermes Agent): the install left uv's own Python first on the path, so the hidden test ran `python -m pytest` in an interpreter without pytest. A re-run with that fixed is next.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-deepseek-dark.png">
