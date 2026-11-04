@@ -36,7 +36,7 @@ As of November 2026. Pi is built to be extended; mini is built to be read.
 | Tools | 5 + web search (+ subagent, ask user, goal done) | bash only | 6 | 4 (+6 optional) | many | many |
 | Sessions | yes | no | no | yes, branching | yes, branching | yes, branching |
 | Compaction | yes | no | no | yes | yes | yes |
-| Claude's server compaction | yes | no | no | no, own summary | no, no Claude models | no, own summary |
+| Claude's server compaction | yes | no | no | no, own summary, drops thinking | no, no Claude models | no, own summary, drops thinking |
 | Permissions | yes, plus judge | yes, confirm mode; container optional | no | no, docs advise a container | yes | yes |
 | Subagents | yes | no | no | no, by design | yes | yes |
 | Goal mode | yes, verify command + reviewer | no | no | no | yes, the worker marks it done | yes, a judge model, no tools |
