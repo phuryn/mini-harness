@@ -77,6 +77,7 @@ def sessions(cwd: str) -> list[Path]:
 
 
 def list_sessions(cwd: str, limit: int = 15):
+    """(id, prompts, cost, title from the first prompt, last updated as a timestamp), newest first."""
     rows = []
     for p in sessions(cwd)[:limit]:
         first, turns, cost = "", 0, 0.0
@@ -86,5 +87,7 @@ def list_sessions(cwd: str, limit: int = 15):
                 turns, first = turns + 1, first or c
             elif e["kind"] == "usage":
                 cost += e.get("cost", 0)
-        rows.append((p.stem, turns, cost, first.replace("\n", " ")[:60]))
+        title = " ".join(first.split())
+        title = title if len(title) <= 50 else title[:49].rstrip() + "…"
+        rows.append((p.stem, turns, cost, title, p.stat().st_mtime))
     return rows

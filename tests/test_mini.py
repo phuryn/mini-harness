@@ -242,7 +242,9 @@ def test_session_listing(ws):
     agent, _, _ = make(ws, [reply(text("x"))])
     agent.turn("first prompt")
     rows = list_sessions(str(ws))
-    assert rows[0][0] == agent.session.id and rows[0][1] == 1 and rows[0][3] == "first prompt"
+    assert rows[0][0] == agent.session.id and rows[0][1] == 1 and rows[0][3] == "first prompt" and rows[0][4] > 0
+    agent.turn("x" * 80)
+    assert list_sessions(str(ws))[0][3] == "first prompt"  # the title stays the first prompt
     assert Session.find(str(ws)).id == agent.session.id
 
 

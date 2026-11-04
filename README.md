@@ -119,7 +119,7 @@ A model whose key is missing refuses to start and says which variable to set. Ke
 
 ```bash
 cd ~/some/project
-mini
+mini                                  # or start on another model: mini --model claude-sonnet-5-5
 ```
 
 **Unattended.** `-p` runs one prompt, prints the answer and exits. Nobody is there to approve risky actions, so they're denied unless `--allow` covers them.
@@ -128,6 +128,8 @@ mini
 cd ~/some/project
 mini -p "explain this repo in five bullets"
 ```
+
+The flags work the same in both modes: `--model`, `--effort`, `--permissions` and `--allow` all apply to an interactive session too. `mini --models` lists the models your keys can use. Every flag is under [Using it](#using-it).
 
 On Windows without Git for Windows, the `bash` tool falls back to `cmd.exe`; `MINI_BASH` points it to another `bash.exe`. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up. `MINI_NO_TASK=1` leaves out subagents (the `/goal` reviewer still runs).
 
@@ -140,7 +142,7 @@ To work on mini itself: `git clone https://github.com/phuryn/mini-harness && cd 
 | `/new [model]` | Start a fresh session, on another model if given |
 | `/effort [level]` | Show or change the effort for the next requests |
 | `/permissions [mode]` | `ask`, `judge` or `yes`: who approves risky calls |
-| `/sessions`, `/resume [id]` | List sessions in this directory; resume the latest or one by id prefix |
+| `/sessions`, `/resume [id]` | List this directory's sessions, newest first, with last update, prompts and the first prompt as a title (`*` marks the one you're in); resume the latest or one by id prefix |
 | `/context` | How full the context is (the size the API reported for the last request) and what fills it: system prompt, mini's tools, MCP tools, web search, conversation |
 | `/compact` | Replace the history with a summary now |
 | `/dream` | Tidy `memory/`: merge duplicates, drop what's stale |

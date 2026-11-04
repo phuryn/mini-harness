@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import sys
+import time
 
 import anthropic
 
@@ -226,8 +227,10 @@ def command(agent, line, new):
         agent = new(Session.create(cwd), rest or None)
         print(f"{DIM}new session {agent.session.id}{OFF}")
     elif cmd == "/sessions":
-        for sid, turns, _, first in list_sessions(cwd):
-            print(f"  {sid}  {turns:>3} prompts  {first}")
+        for sid, turns, _, title, updated in list_sessions(cwd):
+            mark = "*" if sid == agent.session.id else " "  # the session you're in
+            when = time.strftime("%Y-%m-%d %H:%M", time.localtime(updated))
+            print(f"{mark} {sid}  {when}  {turns:>3} prompt{'' if turns == 1 else 's'}  {title}")
     elif cmd == "/resume":
         s = Session.find(cwd, rest or None)
         if not s:
