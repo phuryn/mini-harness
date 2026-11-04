@@ -56,18 +56,23 @@ As of November 2026. Pi is built to be extended; mini is built to be read.
 
 ### On Terminal-Bench 2.0
 
-[Terminal-Bench 2.0](https://www.tbench.ai/) gives an agent a job in a Docker container, such as building a Cython extension, setting up a git web server or booting an Alpine VM in QEMU, and checks the result with hidden tests. On its official 10-task sample, run through Harbor with Claude Haiku 5.5 at high effort for every harness, [mini 1.0.0](https://github.com/phuryn/mini-harness/tree/767a0b4) passed 8.2 tasks on average over five runs, tied with OpenCode and behind Pi (8.8) and Claude Code (8.4), in 33 agent minutes and for $0.11 a run. Some runs were on a Mac and the rest on x86 Linux, with the same harness versions.
+[Terminal-Bench 2.0](https://www.tbench.ai/) gives an agent a job in a Docker container, such as building a Cython extension, setting up a git web server or booting an Alpine VM in QEMU, and checks the result with hidden tests. On its official 10-task sample, run through Harbor with the same model for every harness, five runs each, [mini 1.0.0](https://github.com/phuryn/mini-harness/tree/767a0b4) passed:
+
+- **Claude Haiku 5.5 at high effort:** 9.2 of 10 on average, the highest of eight harnesses, ahead of Pi and mini-swe-agent (8.8), in 31 agent minutes and for $0.11 a run.
+- **DeepSeek V4.1 Flash at high effort**, on DeepSeek's own API: 8.4, level with Claude Code and Hermes Agent, behind mini-swe-agent (8.8) and OpenCode (8.6). Cost is each harness's tokens at DeepSeek's list price.
+
+Gaps under about one task are within run-to-run noise: a single harness moved by up to four tasks between runs. Some Claude runs were on a Mac and the rest on x86 Linux, with the same harness versions.
+
+One task was re-run. In build-cython-ext, the hidden test runs `uv run pytest`, and uv prefers any uv-managed Python over the system one. The three harnesses that install through uv (Mini Harness, mini-swe-agent, Hermes Agent) left such a Python behind, so 10 of 11 checks passed and the last one ran in an interpreter without pytest: 0 of 5 for all three, on both models. With their Pythons installed elsewhere (`UV_PYTHON_INSTALL_DIR`), all three passed 5 of 5 on both models. Every other result is from the original runs; the raw results and both summaries are kept.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-dark.png">
-  <img src="docs/img/terminal-bench-light.png" alt="Terminal-Bench 2.0, Claude Haiku 5.5 at high effort, mean tasks passed of 10 over five runs, with agent minutes and cost per run: Pi 8.8 (35 min, $0.09), Claude Code 8.4 (33 min, $0.19), OpenCode 8.2 (36 min, $0.11), Mini Harness 8.2 (33 min, $0.11), Terminus 2 8.0 (51 min, $0.12), mini-swe-agent 7.8 (40 min, $0.19), Kilo Code 7.6 (39 min, $0.13), Hermes Agent 7.4 (47 min, about $0.11, estimated from tokens).">
+  <img src="docs/img/terminal-bench-light.png" alt="Terminal-Bench 2.0, Claude Haiku 5.5 at high effort, mean tasks passed of 10 over five runs, with agent minutes and cost per run: Mini Harness 9.2 (31 min, $0.11), Pi 8.8 (35 min, $0.09), mini-swe-agent 8.8 (38 min, $0.19), Hermes Agent 8.4 (44 min, ~$0.10), Claude Code 8.4 (33 min, $0.19), OpenCode 8.2 (36 min, $0.11), Terminus 2 8.0 (51 min, $0.12), Kilo Code 7.6 (39 min, $0.13).">
 </picture>
-
-On DeepSeek V4.1 Flash at high effort, on DeepSeek's own API with the same tasks, harness versions and five runs, mini 1.0.0 passed 7.4, tied with Hermes Agent for last. OpenCode led with 8.6, then Claude Code (8.4), Pi and Terminus 2 (8.2). On both models, build-cython-ext failed in every run for the three harnesses installed with uv (Mini Harness, mini-swe-agent, Hermes Agent): the install left uv's own Python first on the path, so the hidden test ran `python -m pytest` in an interpreter without pytest. A re-run with that fixed is next.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-deepseek-dark.png">
-  <img src="docs/img/terminal-bench-deepseek-light.png" alt="Terminal-Bench 2.0, DeepSeek V4.1 Flash at high effort, mean tasks passed of 10 over five runs, with agent minutes and cost per run at DeepSeek's list price: OpenCode 8.6 (33 min, $0.08), Claude Code 8.4 (39 min, $0.32), Pi 8.2 (40 min, $0.24), Terminus 2 8.2 (50 min, $0.47), Kilo Code 8.0 (31 min, $0.11), mini-swe-agent 7.8 (43 min, $0.32), Hermes Agent 7.4 (46 min, $0.24), Mini Harness 7.4 (42 min, $0.32).">
+  <img src="docs/img/terminal-bench-deepseek-light.png" alt="Terminal-Bench 2.0, DeepSeek V4.1 Flash at high effort, cost at DeepSeek list price, mean tasks passed of 10 over five runs, with agent minutes and cost per run: mini-swe-agent 8.8 (43 min, $0.31), OpenCode 8.6 (33 min, $0.08), Hermes Agent 8.4 (45 min, $0.22), Mini Harness 8.4 (39 min, $0.31), Claude Code 8.4 (39 min, $0.32), Pi 8.2 (40 min, $0.24), Terminus 2 8.2 (50 min, $0.47), Kilo Code 8.0 (31 min, $0.11).">
 </picture>
 
 ## Install
