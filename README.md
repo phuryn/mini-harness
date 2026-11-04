@@ -51,6 +51,15 @@ As of November 2026. Pi is built to be extended; mini is built to be read. Small
   <img src="docs/img/bug-hunt-bench-light.png" alt="Bug Hunt Bench, DeepSeek V4.1 Flash 1017 at high effort, mean planted bugs fixed over five runs: Pi 40.4, Grok Build CLI 40.4, DeepSeek Harness 39.2, OpenCode 2.0 38.6, OpenCode 36.6, Claude Code 36.4, Mini Harness 34.2, Codex CLI 33.2, Hermes Agent 32.0, Kilo Code 31.8.">
 </picture>
 
+### On Terminal-Bench
+
+[Terminal-Bench 2.0](https://www.tbench.ai/) gives an agent a job in a Docker container, such as building a Cython extension, setting up a git web server or booting an Alpine VM in QEMU, and checks the result with hidden tests. On its official 10-task sample, run through Harbor with Claude Haiku 5.5 at high effort for every harness, [mini 1.0.0](https://github.com/phuryn/mini-harness/tree/767a0b4) passed 8.2 tasks on average over five runs, tied with OpenCode and behind Pi (8.8) and Claude Code (8.4), in 33 agent minutes and for $0.11 a run. Runs one to three of eight tasks ran on a Mac; the two QEMU tasks and runs four and five ran on x86 Linux, with the same harness versions.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-dark.png">
+  <img src="docs/img/terminal-bench-light.png" alt="Terminal-Bench 2.0, Claude Haiku 5.5 at high effort, mean tasks passed of 10 over five runs, with agent minutes and cost per run: Pi 8.8 (35 min, $0.09), Claude Code 8.4 (33 min, $0.19), OpenCode 8.2 (36 min, $0.11), Mini Harness 8.2 (33 min, $0.11), Terminus 2 8.0 (51 min, $0.12), mini-swe-agent 7.8 (40 min, $0.19), Kilo Code 7.6 (39 min, $0.13), Hermes Agent 7.4 (47 min, about $0.11, estimated from tokens).">
+</picture>
+
 ## Install
 
 mini is a Python program, installed with [uv](https://docs.astral.sh/uv/), which also fetches Python 3.12+ if you don't have it. The repo is private for now, so you need access on GitHub; the install command asks you to sign in once.
