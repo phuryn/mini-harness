@@ -3,9 +3,11 @@
 
 # mini
 
-A minimal agent harness for Claude (and other models that speak Anthropic's message format), small enough to read in one sitting: about 1,200 lines of Python, with no dependencies beyond `anthropic` and `mcp`.
+An agent harness built for teaching: about 1,200 lines of Python and two dependencies, small enough to read in one sitting.
 
-It has a tool loop, five local tools plus web search, sessions you can resume, compaction, Agent Skills, MCP servers, subagents, a `/goal` mode with an independent reviewer, permission prompts with an optional AI judge, and memory kept in markdown files. It's built to show what a harness actually has to do, and which parts you can leave out.
+Other minimal harnesses exist, but none has goal mode, permissions, skills and MCP servers. I wanted a fully working one to explain how a harness is built, down to Anthropic's server-side compaction. That's why it runs on Claude and on other models that speak Anthropic's message format.
+
+It has a tool loop, five local tools plus web search, sessions you can resume, compaction, Agent Skills, MCP servers, subagents, a `/goal` mode with an independent reviewer, permission prompts with an optional AI judge, and memory kept in markdown files.
 
 ## What's different
 
@@ -19,10 +21,10 @@ It has a tool loop, five local tools plus web search, sessions you can resume, c
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/compare-dark.png">
-  <img src="docs/img/compare-light.png" alt="Mini Harness (this repo) compared with mini-swe-agent, nanocode, Pi, Codex CLI and Claude Code on code size, dependencies, tools, sessions, compaction, permissions, subagents, goal mode and MCP. The same table is below as text.">
+  <img src="docs/img/compare-light.png" alt="Mini Harness (this repo) compared with mini-swe-agent, nanocode, Pi, Codex CLI and Claude Code on code size, dependencies, tools, sessions, compaction, Claude's server-side compaction, permissions, subagents, goal mode, MCP and skills. The same table is below as text.">
 </picture>
 
-As of November 2026. Pi is built to be extended; mini is built to be read. Smaller harnesses do real work, but none of the ones above covers crash recovery, an append-only transcript, permissions and checked goals together.
+As of November 2026. Pi is built to be extended; mini is built to be read.
 
 <details>
 <summary>The same table as text</summary>
@@ -34,6 +36,7 @@ As of November 2026. Pi is built to be extended; mini is built to be read. Small
 | Tools | 5 + web search (+ subagent, ask user, goal done) | bash only | 6 | 4 (+6 optional) | many | many |
 | Sessions | yes | no | no | yes, branching | yes, branching | yes, branching |
 | Compaction | yes | no | no | yes | yes | yes |
+| Claude's server compaction | yes | no | no | no, own summary | no, no Claude models | no, own summary |
 | Permissions | yes, plus judge | yes, confirm mode; container optional | no | no, docs advise a container | yes | yes |
 | Subagents | yes | no | no | no, by design | yes | yes |
 | Goal mode | yes, verify command + reviewer | no | no | no | yes, the worker marks it done | yes, a judge model, no tools |
@@ -51,9 +54,9 @@ As of November 2026. Pi is built to be extended; mini is built to be read. Small
   <img src="docs/img/bug-hunt-bench-light.png" alt="Bug Hunt Bench, DeepSeek V4.1 Flash 1017 at high effort, mean planted bugs fixed over five runs: Pi 40.4, Grok Build CLI 40.4, DeepSeek Harness 39.2, OpenCode 2.0 38.6, OpenCode 36.6, Claude Code 36.4, Mini Harness 34.2, Codex CLI 33.2, Hermes Agent 32.0, Kilo Code 31.8.">
 </picture>
 
-### On Terminal-Bench
+### On Terminal-Bench 2.0
 
-[Terminal-Bench 2.0](https://www.tbench.ai/) gives an agent a job in a Docker container, such as building a Cython extension, setting up a git web server or booting an Alpine VM in QEMU, and checks the result with hidden tests. On its official 10-task sample, run through Harbor with Claude Haiku 5.5 at high effort for every harness, [mini 1.0.0](https://github.com/phuryn/mini-harness/tree/767a0b4) passed 8.2 tasks on average over five runs, tied with OpenCode and behind Pi (8.8) and Claude Code (8.4), in 33 agent minutes and for $0.11 a run. Runs one to three of eight tasks ran on a Mac; the two QEMU tasks and runs four and five ran on x86 Linux, with the same harness versions.
+[Terminal-Bench 2.0](https://www.tbench.ai/) gives an agent a job in a Docker container, such as building a Cython extension, setting up a git web server or booting an Alpine VM in QEMU, and checks the result with hidden tests. On its official 10-task sample, run through Harbor with Claude Haiku 5.5 at high effort for every harness, [mini 1.0.0](https://github.com/phuryn/mini-harness/tree/767a0b4) passed 8.2 tasks on average over five runs, tied with OpenCode and behind Pi (8.8) and Claude Code (8.4), in 33 agent minutes and for $0.11 a run. Some runs were on a Mac and the rest on x86 Linux, with the same harness versions.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-dark.png">
@@ -112,15 +115,21 @@ A model whose key is missing refuses to start and says which variable to set. Ke
 
 ## First run
 
+**Interactive.** Start it in a project and talk to it. `/help` lists commands, `/exit` quits. The first line shows the model and who approves risky actions: `permissions judge` when the OpenRouter key is set, `permissions ask` otherwise.
+
 ```bash
 cd ~/some/project
-mini                                      # interactive; /help lists commands, /exit quits
-mini -p "explain this repo in five bullets"   # one prompt, then exit
+mini
 ```
 
-The first line shows the model and who approves risky actions: `permissions judge` when the OpenRouter key is set, `permissions ask` otherwise.
+**Unattended.** `-p` runs one prompt, prints the answer and exits. Nobody is there to approve risky actions, so they're denied unless `--allow` covers them.
 
-On Windows without Git for Windows, the `bash` tool falls back to `cmd.exe`; `MINI_BASH` points it to another `bash.exe`. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up. `MINI_NO_TASK=1` leaves out subagents, so one loop reads and does everything (the `/goal` reviewer still runs); both are set when a session starts.
+```bash
+cd ~/some/project
+mini -p "explain this repo in five bullets"
+```
+
+On Windows without Git for Windows, the `bash` tool falls back to `cmd.exe`; `MINI_BASH` points it to another `bash.exe`. `MINI_NO_WEB=1` leaves web search out of the tools, for runs that must not look anything up. `MINI_NO_TASK=1` leaves out subagents (the `/goal` reviewer still runs).
 
 To work on mini itself: `git clone https://github.com/phuryn/mini-harness && cd mini-harness && uv sync && uv run pytest -q`, then `uv run --project <clone> mini` from any folder.
 
@@ -221,4 +230,4 @@ A full-screen UI, hooks, plugins, a sandbox, checkpoints (use git), forked or pa
 uv run pytest -q
 ```
 
-134 offline tests against a scripted fake client and a real MCP stdio server. They check the invariants above: append-only requests, an answer for every tool call, resume, compaction, interrupts, goal mode, subagent isolation. `AGENTS.md` has the rules for changing the code.
+143 offline tests against a scripted fake client and a real MCP stdio server. They check the invariants above: append-only requests, an answer for every tool call, resume, compaction, interrupts, goal mode, subagent isolation. `AGENTS.md` has the rules for changing the code.
