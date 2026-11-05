@@ -10,7 +10,7 @@ import anthropic
 from .ext import MCPHub, find_skills
 from .loop import OTHER, Agent
 from .session import Session, list_sessions
-from .tools import CONTROL, Approver, approval_note, printable
+from .tools import CONTROL, Approver, approval, printable
 
 DIM, YEL, CYA, RED, OFF = "\033[2m", "\033[33m", "\033[36m", "\033[31m", "\033[0m"
 
@@ -180,7 +180,8 @@ def main():
             if args.json:
                 print(json.dumps({**result, "session": agent.session.id, "cost": round(agent.cost, 4),
                                   "answer": agent.final_text()}))
-            if result.get("stop") in ("error", "interrupted", "pause_turn", "max_tokens"):  # a script must see the run didn't finish
+            stopped = result.get("stop") in ("error", "interrupted", "pause_turn", "max_tokens")
+            if stopped or result.get("status", "done") != "done":  # a script must see the run (or the goal) didn't finish
                 sys.exit(1)
             return
         repl(agent, new)
@@ -242,7 +243,7 @@ def command(agent, line, new):
     elif cmd == "/permissions":
         if rest in ("ask", "judge", "yes") and rest != agent.approver.mode:
             agent.approver.auto, agent.approver.use_judge = rest == "yes", rest == "judge"
-            agent.pending_system.append(approval_note(agent.approver))  # the tool descriptions are frozen
+            agent.pending_system.append(approval(agent.approver))  # the system prompt is frozen
         print(f"permissions {agent.approver.mode} · ask, judge or yes")
     elif cmd == "/effort":
         if rest and rest not in agent.efforts:

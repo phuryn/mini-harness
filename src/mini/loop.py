@@ -21,7 +21,7 @@ import anthropic
 
 from .context import build_system
 from .session import HOME, Session
-from .tools import CONTROL, WEB_SEARCH, LocalTools, ToolError, approval_note, local_schemas, run_shell, schema, truncate
+from .tools import CONTROL, SCHEMAS, WEB_SEARCH, LocalTools, ToolError, approval, run_shell, schema, truncate
 
 # Models, prices and limits live in models.json next to this file; ~/.mini/models.json overrides or adds entries.
 # "claude-*" holds the defaults for any Claude model. An entry with a "base_url" is another provider's
@@ -65,13 +65,15 @@ REVIEW = ("An agent says it met the goal below. Check whether it really did, in 
           "{claim}\n\nSay NOT DONE only for a concrete gap you found, not for something you couldn't check; name what you "
           "couldn't check. End with a last line that is exactly VERDICT: DONE or VERDICT: NOT DONE.")
 
-# After a reply that hit the output cap without a tool call: say which case it was, then let it go on (twice per turn).
+# After a reply that hit the output cap: say which case it was, then let it go on (twice per turn).
 CUT_OFF = {"thinking": "Your last response hit the output limit while you were still thinking, before it produced "
                        "any text or tool call. Don't start over: from where your reasoning got to, think much more "
                        "briefly and produce your answer or next tool call well within the limit.",
            "text": "Your last response hit the output limit and was cut off mid-text. Continue right where it stopped, "
-                   "without repeating it; if what you're writing is long, split it into smaller pieces, such as one "
-                   "file at a time."}
+                   "without repeating it; if what you're writing is long, split it into smaller pieces.",
+           "tool": "Your last response hit the output limit inside a tool call, so the call didn't run. Make it "
+                   "smaller: write a long file in parts (write the start, then add to it with edit), or split the work "
+                   "into several calls."}
 
 GOAL_OFF = "Goal mode is off (status: {status}). Earlier goal instructions no longer apply unless the user resumes the goal."
 
@@ -143,15 +145,18 @@ class Agent:
             said = "\n".join(m["content"] for m in self.messages if m["role"] == "system")
             if said.rfind("Goal mode is on") > said.rfind("Goal mode is off") and not (self.goal and self.goal["status"] == "active"):
                 self.pending_system.append(GOAL_OFF.format(status=self.goal["status"] if self.goal else "cleared"))
-            bash = next((t for t in self.tools if t.get("name") == "bash"), None)
-            if bash and bash["description"] != local_schemas(["bash"], approver)[0]["description"]:  # other permissions now
-                self.pending_system.append(approval_note(approver))
+            said, now = self.system + "\n" + said, approval(approver)  # the last word on approval, if not this one
+            if said.rfind(now) < max(said.rfind("Approval in this session"), 0):  # 0: a session from before 1.0.2
+                self.pending_system.append(now)
+            self.local.held = sum(len(b["source"]["data"]) for m in self.messages if isinstance(m["content"], list)
+                                  for r in m["content"] if isinstance(r.get("content"), list)
+                                  for b in r["content"] if b.get("type") == "image")
         else:
             self.model = model or (SUB_MODEL if sub else MAIN_MODEL)
             other = self.model in OTHER
             need_key(self.model, client)
             names = ["read", "find", "bash"] if sub else ["read", "write", "edit", "bash", "find"]
-            self.tools = local_schemas(names, approver)  # their approval sentences match the permissions
+            self.tools = [{"name": x, **SCHEMAS[x]} for x in names]
             if not sub:
                 skip = {"task": os.environ.get("MINI_NO_TASK") == "1",  # MINI_NO_TASK: one loop does it all
                         "ask_user": not approver.interactive}  # headless: nobody would answer
@@ -164,7 +169,7 @@ class Agent:
             if os.environ.get("MINI_NO_WEB") != "1":  # e.g. benchmarks that forbid looking things up
                 self.tools.append(WEB_SEARCH)
             self.system = build_system(cwd, list(skills), hub.errors if hub else [], sub, self.model,
-                                       "task" in [x["name"] for x in self.tools])
+                                       "task" in [x["name"] for x in self.tools], approval(approver))
             session.append("meta", model=self.model, cwd=str(cwd), system=self.system, tools=self.tools)
         self.other = OTHER.get(self.model)  # None for Claude
         self.cfg = cfg = model_config(self.model)
@@ -327,21 +332,23 @@ class Agent:
             paused = []
             self.ui.end_message()
             uses = [b for b in blocks if b["type"] == "tool_use"]
+            cut = resp.stop_reason == "max_tokens" and cut_offs < 2
             if uses:
                 results, interrupted = self.run_tools(uses, resp.stop_reason)
-                self.add_user(results)
+                self.add_user(results + ([{"type": "text", "text": CUT_OFF["tool"]}] if cut else []))
                 if interrupted:
                     return "interrupted"
                 if resp.stop_reason == "tool_use":
                     if self.should_compact() and self.compact():  # long tool loops must not outgrow the window
                         self.add_user("Context was compacted. Continue the current task from the summary.", True)
                     continue
-            if resp.stop_reason == "max_tokens" and not uses:  # the reply is kept as returned; a note says what happened
-                if cut_offs < 2:
+            if resp.stop_reason == "max_tokens":  # the reply is kept as returned; a note says what happened
+                if cut:
                     cut_offs += 1
                     self.ui.note("the reply hit the output limit; asking the model to go on")
-                    self.add_user(CUT_OFF["text" if any(b["type"] == "text" and b["text"].strip() for b in blocks)
-                                          else "thinking"], True)
+                    if not uses:  # with a call, the note went in with its result
+                        self.add_user(CUT_OFF["text" if any(b["type"] == "text" and b["text"].strip() for b in blocks)
+                                              else "thinking"], True)
                     continue
                 self.ui.warn("the reply hit the output limit three times in a row; stopped")
             if resp.stop_reason == "refusal":
@@ -435,7 +442,7 @@ class Agent:
             return False
         self.messages = new  # a new segment in the session file; older turns stay on disk
         self.session.append("compact", messages=new)
-        self.last_context, self.compact_failed_at = 0, 0
+        self.last_context, self.compact_failed_at, self.local.held = 0, 0, 0  # the summary holds no images
         self.ui.note("compacted")
         if self.goal and self.goal["status"] == "active":
             self.pending_system.append(self.goal_rules())
@@ -514,7 +521,7 @@ class Agent:
                 stop = self.turn(message, harness=True)  # the objective reaches the judge from the goal itself
                 g["turns"] += 1
                 g["spent"] = self.cost - start_cost
-                if stop in ("interrupted", "error", "refusal"):
+                if stop in ("interrupted", "error", "refusal", "max_tokens"):  # max_tokens: it already got two retries
                     g["status"], g["note"] = "paused", stop
                     break
                 if self.goal_claim is not None:

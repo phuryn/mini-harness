@@ -86,10 +86,12 @@ def test_parallel_calls_answered_in_one_message_and_errors_kept(ws):
 
 def test_max_tokens_with_tool_use_still_gets_results(ws):
     t = tool("bash", {"command": "echo hi"})
-    agent, _, _ = make(ws, [reply(t, stop="max_tokens")])
-    assert agent.turn("go") == "max_tokens"
-    last = agent.messages[-1]
-    assert last["role"] == "user" and last["content"][0]["is_error"] is True
+    agent, client, _ = make(ws, [reply(t, stop="max_tokens"), reply(text("ok"))])
+    assert agent.turn("go") == "end_turn"
+    assert_append_only(client.requests)
+    result, note = client.requests[1]["messages"][-1]["content"]  # the note rides with the result: roles alternate
+    assert result["tool_use_id"] == t["id"] and result["is_error"] is True and "Not run" in result["content"]
+    assert note["type"] == "text" and "inside a tool call" in note["text"]
 
 
 def test_interrupt_during_tools_backfills_every_result(ws, monkeypatch):
@@ -1535,40 +1537,50 @@ def test_image_sizes_come_from_the_header_and_big_ones_are_refused(ws):
         t.read(str(ws.parent / "elsewhere.png"))
 
 
-def descriptions(ws, approver):
-    agent = Agent(str(ws), Session.create(str(ws)), QuietUI(), approver, client=FakeClient([]))
-    return {t["name"]: t.get("description", "") for t in agent.tools}
+def fresh(ws, approver):
+    return Agent(str(ws), Session.create(str(ws)), QuietUI(), approver, client=FakeClient([]))
 
 
-def test_tool_descriptions_match_the_permissions(ws):
-    yes = descriptions(ws, Approver(auto=True))
-    assert "Every command runs without asking" in yes["bash"]
-    assert all("runs without asking" in yes[x] and "may say no" not in yes[x] for x in ("bash", "read", "write", "find"))
-    ask = descriptions(ws, Approver())
-    assert all("asks the user, who may say no" in ask[x] for x in ("bash", "read", "write", "find"))
-    headless = descriptions(ws, Approver(interactive=False, allow=("python3 -m pytest",)))
-    assert all("is denied: nobody can approve" in headless[x] for x in ("bash", "read", "write", "find"))
-    assert "pre-approved commands starting with: python3 -m pytest." in headless["bash"]
-    judge = descriptions(ws, Approver(use_judge=True))
-    assert all("a reviewer model decides" in judge[x] for x in ("bash", "read", "find"))
-    assert "asks the user" in judge["write"]  # the judge never decides gated writes
-    assert "with & keeps it waiting" in yes["bash"] and "process group" in yes["bash"] and "background" in yes["bash"]
+def test_the_system_prompt_says_who_approves_and_the_tools_never_claim_it(ws):
+    yes = fresh(ws, Approver(auto=True))
+    assert "Approval in this session (permissions yes): every tool call runs without asking, so nothing is denied." in yes.system
+    ask = fresh(ws, Approver()).system
+    assert "(permissions ask)" in ask and "ask the user, who may say no" in ask
+    headless = fresh(ws, Approver(interactive=False, allow=("python3 -m pytest",))).system
+    assert "are denied, since nobody can approve" in headless and "pre-approved calls starting with: python3 -m pytest." in headless
+    judge = fresh(ws, Approver(use_judge=True)).system
+    assert "(permissions judge)" in judge and "reviewer model" in judge and "go to the user" in judge
+    sub = Agent(str(ws), Session.create(str(ws)), QuietUI(), Approver(auto=True), client=FakeClient([]), sub=True)
+    assert "nothing is denied" in sub.system  # subagents are told too
+    for agent in (yes, fresh(ws, Approver()), fresh(ws, Approver(use_judge=True))):
+        words = json.dumps(agent.tools)
+        assert "ask the user" not in words and "can be denied" not in words and "may say no" not in words
+        assert words.count("goes through approval") + words.count("go through approval") == 4  # read, write, bash, find
+    bash = next(t for t in yes.tools if t["name"] == "bash")["description"]
+    assert "with & keeps it waiting" in bash and "process group" in bash and "background" in bash
 
 
-def test_permissions_change_is_a_note_and_the_tools_stay_frozen(ws):
+def test_a_permissions_change_is_a_note_and_resume_tells_the_latest(ws):
     from mini.cli import command
-    agent, client, _ = make(ws, [reply(text("a")), reply(text("b")), reply(text("c"))])
+    agent, client, _ = make(ws, [reply(text("a")), reply(text("b"))])
+    agent.approver = agent.local.approver = Approver()  # as if started in ask
     agent.turn("one")
-    command(agent, "/permissions ask", None)
-    command(agent, "/permissions ask", None)  # no change, no second note
+    command(agent, "/permissions yes", None)
+    command(agent, "/permissions yes", None)  # no change, no second note
     agent.turn("two")
     assert_append_only(client.requests)
     notes = [m["content"] for m in client.requests[1]["messages"] if m["role"] == "system"]
-    assert len(notes) == 1 and notes[0].startswith("Permissions are now ask.") and "asks the user" in notes[0]
-    again, _, _ = make(ws, [], session=Session(agent.session.path))
-    assert again.tools == agent.tools and again.pending_system == []  # started in yes, resumed in yes: nothing to say
-    headless = Agent(str(ws), Session(agent.session.path), QuietUI(), Approver(interactive=False), client=FakeClient([]))
-    assert headless.tools == agent.tools and "Permissions are now ask" in headless.pending_system[-1]
+    assert notes == ["Approval in this session (permissions yes): every tool call runs without asking, so nothing is denied."]
+    resume = lambda ap: Agent(str(ws), Session(agent.session.path), QuietUI(), ap, client=FakeClient([]))
+    assert resume(Approver(auto=True)).pending_system == []  # the last word was yes, and it's yes again
+    back = resume(Approver())  # started in ask, switched to yes, resumed in ask: the model must hear it's ask again
+    assert back.system == agent.system and back.tools == agent.tools and "(permissions ask)" in back.pending_system[-1]
+    old = Session.create(str(ws))  # a session from 1.0.1: no approval line anywhere
+    old.append("meta", model="claude-opus-5-5", cwd=str(ws), system="old prompt", tools=agent.tools)
+    first = Agent(str(ws), old, QuietUI(), Approver(auto=True), client=FakeClient([reply(text("ok"))]))
+    assert "nothing is denied" in first.pending_system[-1]
+    first.turn("hi")
+    assert Agent(str(ws), Session(old.path), QuietUI(), Approver(auto=True), client=FakeClient([])).pending_system == []
 
 
 def test_output_cap_without_a_tool_call_continues_twice_then_stops(ws):
@@ -1608,6 +1620,17 @@ def test_background_job_returns_at_once_and_outlives_the_call(ws, tmp_path):
         time.sleep(0.05)
     assert (ws / "out.txt").read_text() == "done\n" and log.read_text().strip() == "[exit 0]"
     assert "[exit 0]" in LocalTools(str(ws), Approver(interactive=False)).bash(f"tail {log}")  # job logs read freely
+    assert re.fullmatch(r"\d{8}-\d{6}-[0-9a-f]{12}\.log", log.name)
+    (tmp_path / "outside.txt").write_text("private\n")
+    (log.parent / "link.log").symlink_to(tmp_path / "outside.txt")
+    with pytest.raises(ToolError, match="denied this read"):  # the free pass is for the logs, not what links point to
+        LocalTools(str(ws), Approver(interactive=False)).read(str(log.parent / "link.log"))
+    out = t.bash('echo "[$1]"; exit 3', background=True)  # exit still logs; the command isn't its own $1
+    log = Path(re.search(r"output in (\S+) ", out)[1])
+    end = time.monotonic() + 10
+    while "[exit" not in log.read_text() and time.monotonic() < end:
+        time.sleep(0.05)
+    assert log.read_text() == "[]\n[exit 3]\n"
     with pytest.raises(ToolError, match="denied"):  # the gate is the same as for any command
         LocalTools(str(ws), Approver(interactive=False)).bash("sleep 1; true", background=True)
 
@@ -1633,7 +1656,7 @@ def test_the_bash_tool_runs_bash_when_there_is_one(ws, monkeypatch):
 
 
 def test_no_ask_user_when_nobody_can_answer(ws):
-    headless = descriptions(ws, Approver(interactive=False))
+    headless = [t["name"] for t in fresh(ws, Approver(interactive=False)).tools]
     assert "ask_user" not in headless and {"bash", "goal_done", "task"} <= set(headless)
     chat, _, _ = make(ws, [])
     assert "ask_user" in [t["name"] for t in chat.tools]
@@ -1641,9 +1664,14 @@ def test_no_ask_user_when_nobody_can_answer(ws):
     assert resumed.tools == chat.tools  # the frozen list rules; the call itself says nobody can answer
 
 
-def test_a_tilde_word_for_no_user_does_not_crash_the_command(ws):
+def test_a_tilde_word_for_no_user_does_not_crash_or_hide_the_other_words(ws):
     assert LocalTools(str(ws), Approver(auto=True)).bash("echo ~nosuchuser_mini") == "~nosuchuser_mini"
-    assert LocalTools(str(ws), Approver(interactive=False))._names_private("cat ~nosuchuser_mini/x")  # unknown: it asks
+    asked = []
+    approver = Approver(interactive=False, use_judge=True)
+    approver.judge = lambda kind, detail: asked.append(detail) or ("allow", "fine")
+    with pytest.raises(ToolError, match="denied"):  # a secret: never the judge's call, and headless nobody's
+        LocalTools(str(ws), approver).bash("cat ~nosuchuser_mini ~/.ssh/id_rsa")
+    assert asked == []
 
 
 def test_web_search_is_called_directly_without_the_code_sandbox(ws):
@@ -1652,3 +1680,53 @@ def test_web_search_is_called_directly_without_the_code_sandbox(ws):
     tools = client.requests[0]["tools"]
     assert {"type": "web_search_20260209", "name": "web_search", "allowed_callers": ["direct"]} in tools
     assert "code_execution" not in json.dumps(tools)
+
+
+def test_images_held_in_the_transcript_are_capped(ws, monkeypatch):
+    import mini.tools as mt
+    (ws / "a.png").write_bytes(png(40, 30))
+    agent, client, _ = make(ws, [reply(tool("read", {"path": "a.png"}), stop="tool_use"), reply(text("seen")),
+                                 reply({"type": "compaction", "content": "Summary.", "signature": "c"}, stop="compaction")])
+    agent.turn("look")
+    size = len(client.requests[1]["messages"][-1]["content"][0]["content"][1]["source"]["data"])
+    assert agent.local.held == size
+    resumed, _, _ = make(ws, [], session=Session(agent.session.path))
+    assert resumed.local.held == size  # counted from the transcript on resume
+    monkeypatch.setattr(mt, "IMAGES_HELD", size + 10)
+    with pytest.raises(ToolError, match="already holds 0.0 MB of images"):
+        resumed.local.read("a.png")
+    agent.compact()
+    assert agent.local.held == 0  # the summary holds no images
+    monkeypatch.setattr(mt, "IMAGES_HELD", 2 * size + 10)
+    t = LocalTools(str(ws), Approver(auto=True))
+    t.read("a.png")
+    t.read("a.png")  # parallel reads in one reply count too, before any of them is in the transcript
+    with pytest.raises(ToolError, match="/compact"):
+        t.read("a.png")
+
+
+def test_a_goal_pauses_when_replies_keep_hitting_the_output_cap(ws):
+    agent, client, _ = make(ws, [reply(thinking(), stop="max_tokens") for _ in range(3)])
+    g = agent.set_goal("prove it", max_turns=5)
+    assert g["status"] == "paused" and g["note"] == "max_tokens" and len(client.requests) == 3
+    assert_append_only(client.requests)
+
+
+def test_headless_goal_exit_code_says_whether_it_was_done(ws, monkeypatch):
+    import mini.cli as cli
+
+    class Stub:
+        effort, efforts, model, cost, judge = "high", ("high",), "m", 0.0, None
+        session = type("S", (), {"id": "s"})()
+        def __init__(self, *a, **kw): pass
+        def final_text(self): return ""
+        def set_goal(self, *a): return {"status": self.status, "note": "", "turns": 1}
+    monkeypatch.setattr(cli, "Agent", Stub)
+    monkeypatch.chdir(ws)
+    monkeypatch.setattr(sys, "argv", ["mini", "--goal", "fix it", "--json"])
+    Stub.status = "done"
+    assert cli.main() is None
+    Stub.status = "paused"
+    with pytest.raises(SystemExit) as stopped:
+        cli.main()
+    assert stopped.value.code == 1
