@@ -45,25 +45,12 @@ As of November 2026. Pi is built to be extended; mini is built to be read.
 
 </details>
 
-### On Bug Hunt Bench
-
-[Bug Hunt Bench](https://bughunt.productcompass.pm/) plants 105 bugs in two codebases and counts how many an agent fixes. With one model for every harness, DeepSeek V4.1 Flash at high effort on DeepSeek's own API, [mini 0.9.0](https://github.com/phuryn/mini-harness/tree/c936132) fixed 34.2 on average over five runs, between Claude Code (36.4) and Codex CLI (33.2), in 71 minutes and for $0.86 a run.
-
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bug-hunt-bench-dark.png">
-  <img src="docs/img/bug-hunt-bench-light.png" alt="Bug Hunt Bench, DeepSeek V4.1 Flash 1017 at high effort, mean planted bugs fixed over five runs: Pi 40.4, Grok Build CLI 40.4, DeepSeek Harness 39.2, OpenCode 2.0 38.6, OpenCode 36.6, Claude Code 36.4, Mini Harness 34.2, Codex CLI 33.2, Hermes Agent 32.0, Kilo Code 31.8.">
-</picture>
-
 ### On Terminal-Bench 2.0
 
 [Terminal-Bench 2.0](https://www.tbench.ai/) gives an agent a job in a Docker container, such as building a Cython extension, setting up a git web server or booting an Alpine VM in QEMU, and checks the result with hidden tests. On its official 10-task sample, run through Harbor with the same model for every harness, five runs each, [mini 1.0.0](https://github.com/phuryn/mini-harness/tree/767a0b4) passed:
 
 - **Claude Haiku 5.5 at high effort:** 9.2 of 10 on average, the highest of eight harnesses, ahead of Pi and mini-swe-agent (8.8), in 31 agent minutes and for $0.11 a run.
 - **DeepSeek V4.1 Flash at high effort**, on DeepSeek's own API: 8.4, level with Claude Code and Hermes Agent, behind mini-swe-agent (8.8) and OpenCode (8.6). Cost is each harness's tokens at DeepSeek's list price.
-
-Gaps under about one task are within run-to-run noise: a single harness moved by up to four tasks between runs. Some Claude runs were on a Mac and the rest on x86 Linux, with the same harness versions.
-
-One task was re-run. In build-cython-ext, the hidden test runs `uv run pytest`, and uv prefers any uv-managed Python over the system one. The three harnesses that install through uv (Mini Harness, mini-swe-agent, Hermes Agent) left such a Python behind, so 10 of 11 checks passed and the last one ran in an interpreter without pytest: 0 of 5 for all three, on both models. With their Pythons installed elsewhere (`UV_PYTHON_INSTALL_DIR`), all three passed 5 of 5 on both models. Every other result is from the original runs; the raw results and both summaries are kept.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-dark.png">
@@ -73,6 +60,19 @@ One task was re-run. In build-cython-ext, the hidden test runs `uv run pytest`, 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-deepseek-dark.png">
   <img src="docs/img/terminal-bench-deepseek-light.png" alt="Terminal-Bench 2.0, DeepSeek V4.1 Flash at high effort, cost at DeepSeek list price, mean tasks passed of 10 over five runs, with agent minutes and cost per run: mini-swe-agent 8.8 (43 min, $0.31), OpenCode 8.6 (33 min, $0.08), Hermes Agent 8.4 (45 min, $0.22), Mini Harness 8.4 (39 min, $0.31), Claude Code 8.4 (39 min, $0.32), Pi 8.2 (40 min, $0.24), Terminus 2 8.2 (50 min, $0.47), Kilo Code 8.0 (31 min, $0.11).">
+</picture>
+
+Gaps under about one task are within run-to-run noise: a single harness moved by up to four tasks between runs. Some Claude runs were on a Mac and the rest on x86 Linux, with the same harness versions.
+
+One task was re-run. In build-cython-ext, the hidden test runs `uv run pytest`, and uv prefers any uv-managed Python over the system one. The three harnesses that install through uv (Mini Harness, mini-swe-agent, Hermes Agent) left such a Python behind, so 10 of 11 checks passed and the last one ran in an interpreter without pytest: 0 of 5 for all three, on both models. With their Pythons installed elsewhere (`UV_PYTHON_INSTALL_DIR`), all three passed 5 of 5 on both models. Every other result is from the original runs; the raw results and both summaries are kept.
+
+### On Bug Hunt Bench
+
+[Bug Hunt Bench](https://bughunt.productcompass.pm/) plants 105 bugs in two codebases and counts how many an agent fixes. With one model for every harness, DeepSeek V4.1 Flash at high effort on DeepSeek's own API, [mini 0.9.0](https://github.com/phuryn/mini-harness/tree/c936132) fixed 34.2 on average over five runs, between Claude Code (36.4) and Codex CLI (33.2), in 71 minutes and for $0.86 a run.
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="docs/img/bug-hunt-bench-dark.png">
+  <img src="docs/img/bug-hunt-bench-light.png" alt="Bug Hunt Bench, DeepSeek V4.1 Flash 1017 at high effort, mean planted bugs fixed over five runs: Pi 40.4, Grok Build CLI 40.4, DeepSeek Harness 39.2, OpenCode 2.0 38.6, OpenCode 36.6, Claude Code 36.4, Mini Harness 34.2, Codex CLI 33.2, Hermes Agent 32.0, Kilo Code 31.8.">
 </picture>
 
 ## Install
