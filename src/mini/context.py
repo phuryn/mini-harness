@@ -29,8 +29,8 @@ def read_if(path: Path, cap: int = 20_000) -> str | None:
 def build_system(cwd: str, skills: list[dict], mcp_errors: list[str], sub: bool = False, model: str = "",
                  delegate: bool = True) -> str:
     root = Path(cwd)
-    shell = f" (the bash tool runs {'Git Bash' if BASH else 'cmd.exe'})" if WINDOWS else ""
-    parts = [SUB if sub else BASE + ("\n\n" + DELEGATE if delegate else ""), f"Environment: {platform.system()}{shell} · model {model} · cwd {root.resolve()} · session started {time.strftime('%Y-%m-%d %H:%M %Z')}"]
+    shell = ("Git Bash" if BASH else "cmd.exe") if WINDOWS else "bash" if BASH else "/bin/sh, not bash"
+    parts = [SUB if sub else BASE + ("\n\n" + DELEGATE if delegate else ""), f"Environment: {platform.system()} (the bash tool runs {shell}) · model {model} · cwd {root.resolve()} · session started {time.strftime('%Y-%m-%d %H:%M %Z')}"]
     if (agents := read_if(root / "AGENTS.md")):
         parts.append(f"<project_instructions file=\"AGENTS.md\">\n{agents}\n</project_instructions>")
     if sub:

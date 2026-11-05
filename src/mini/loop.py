@@ -21,7 +21,7 @@ import anthropic
 
 from .context import build_system
 from .session import HOME, Session
-from .tools import CONTROL, SCHEMAS, WEB_SEARCH, LocalTools, ToolError, run_shell, schema, truncate
+from .tools import CONTROL, WEB_SEARCH, LocalTools, ToolError, approval_note, local_schemas, run_shell, schema, truncate
 
 # Models, prices and limits live in models.json next to this file; ~/.mini/models.json overrides or adds entries.
 # "claude-*" holds the defaults for any Claude model. An entry with a "base_url" is another provider's
@@ -65,6 +65,14 @@ REVIEW = ("An agent says it met the goal below. Check whether it really did, in 
           "{claim}\n\nSay NOT DONE only for a concrete gap you found, not for something you couldn't check; name what you "
           "couldn't check. End with a last line that is exactly VERDICT: DONE or VERDICT: NOT DONE.")
 
+# After a reply that hit the output cap without a tool call: say which case it was, then let it go on (twice per turn).
+CUT_OFF = {"thinking": "Your last response hit the output limit while you were still thinking, before it produced "
+                       "any text or tool call. Don't start over: from where your reasoning got to, think much more "
+                       "briefly and produce your answer or next tool call well within the limit.",
+           "text": "Your last response hit the output limit and was cut off mid-text. Continue right where it stopped, "
+                   "without repeating it; if what you're writing is long, split it into smaller pieces, such as one "
+                   "file at a time."}
+
 GOAL_OFF = "Goal mode is off (status: {status}). Earlier goal instructions no longer apply unless the user resumes the goal."
 
 EXTRA_SCHEMAS = {
@@ -77,10 +85,10 @@ EXTRA_SCHEMAS = {
                   "model": {"type": "string", "enum": [SUB_MODEL, CHEAP_MODEL],
                             "description": f"Default {SUB_MODEL}; {CHEAP_MODEL} for plain reading or search"}},
                  ["prompt"])},
-    "ask_user": {
+    "ask_user": {  # left out of headless runs, where nobody answers
         "description": "Ask the user a question and wait for the answer. Use it only when you can't go on without "
                        "their decision. When the answer is a choice, list the options: the user picks a number or "
-                       "types their own answer. In headless runs nobody answers, and you'll be told to assume.",
+                       "types their own answer.",
         **schema({"question": {"type": "string"},
                   "options": {"type": "array", "items": {"type": "string"}, "description": "Choices, if any"}},
                  ["question"])},
@@ -117,6 +125,8 @@ def clean(blocks: list[dict]) -> list[dict]:
 
 
 class Agent:
+    max_tokens = 64000  # per response; live tests lower it to exercise CUT_OFF
+
     def __init__(self, cwd, session: Session, ui, approver, hub=None, skills=(), model=None, effort="high", sub=False,
                  client=None):
         self.cwd, self.session, self.ui, self.approver, self.hub = cwd, session, ui, approver, hub
@@ -133,15 +143,19 @@ class Agent:
             said = "\n".join(m["content"] for m in self.messages if m["role"] == "system")
             if said.rfind("Goal mode is on") > said.rfind("Goal mode is off") and not (self.goal and self.goal["status"] == "active"):
                 self.pending_system.append(GOAL_OFF.format(status=self.goal["status"] if self.goal else "cleared"))
+            bash = next((t for t in self.tools if t.get("name") == "bash"), None)
+            if bash and bash["description"] != local_schemas(["bash"], approver)[0]["description"]:  # other permissions now
+                self.pending_system.append(approval_note(approver))
         else:
             self.model = model or (SUB_MODEL if sub else MAIN_MODEL)
             other = self.model in OTHER
             need_key(self.model, client)
             names = ["read", "find", "bash"] if sub else ["read", "write", "edit", "bash", "find"]
-            self.tools = [{"name": x, **SCHEMAS[x]} for x in names]
+            self.tools = local_schemas(names, approver)  # their approval sentences match the permissions
             if not sub:
-                self.tools += [{"name": x, **s} for x, s in EXTRA_SCHEMAS.items()  # MINI_NO_TASK: one loop does it all
-                               if x != "task" or os.environ.get("MINI_NO_TASK") != "1"]
+                skip = {"task": os.environ.get("MINI_NO_TASK") == "1",  # MINI_NO_TASK: one loop does it all
+                        "ask_user": not approver.interactive}  # headless: nobody would answer
+                self.tools += [{"name": x, **s} for x, s in EXTRA_SCHEMAS.items() if not skip.get(x)]
                 if other and "task" in [x["name"] for x in self.tools]:  # one model, so subagents run on it too
                     self.tools[[x["name"] for x in self.tools].index("task")] = {
                         "name": "task", **schema({"prompt": {"type": "string"}}, ["prompt"]),
@@ -195,7 +209,7 @@ class Agent:
 
     # --- model calls ------------------------------------------------------
     def request_args(self, paused=()) -> dict:
-        kw = dict(model=self.model, max_tokens=64000, system=[{"type": "text", "text": self.system}],
+        kw = dict(model=self.model, max_tokens=self.max_tokens, system=[{"type": "text", "text": self.system}],
                   tools=self.tools, messages=self.messages + list(paused), cache_control={"type": "ephemeral"},
                   thinking={"type": "adaptive", "display": "summarized",
                             "block_binding": {"prefix_mismatch_behavior": "drop_block"}},
@@ -282,7 +296,7 @@ class Agent:
         self.goal_claim = None
         self.repair()  # closes anything an earlier Ctrl-C left open; only appends
         self.add_user(content, harness)
-        paused = []  # replies that paused on a server tool; committed only with the reply that completes them
+        paused, cut_offs = [], 0  # paused: replies that paused on a server tool, committed with the one that completes them
         while True:
             try:
                 resp = self.call(paused)
@@ -322,6 +336,14 @@ class Agent:
                     if self.should_compact() and self.compact():  # long tool loops must not outgrow the window
                         self.add_user("Context was compacted. Continue the current task from the summary.", True)
                     continue
+            if resp.stop_reason == "max_tokens" and not uses:  # the reply is kept as returned; a note says what happened
+                if cut_offs < 2:
+                    cut_offs += 1
+                    self.ui.note("the reply hit the output limit; asking the model to go on")
+                    self.add_user(CUT_OFF["text" if any(b["type"] == "text" and b["text"].strip() for b in blocks)
+                                          else "thinking"], True)
+                    continue
+                self.ui.warn("the reply hit the output limit three times in a row; stopped")
             if resp.stop_reason == "refusal":
                 self.ui.warn(f"refused: {getattr(resp.stop_details, 'category', None)}")
             return resp.stop_reason
@@ -343,8 +365,8 @@ class Agent:
                     out, err = str(e), True
                 except Exception as e:
                     out, err = f"{type(e).__name__}: {e}", True
-            self.ui.tool_result(out, err)
-            r = {"type": "tool_result", "tool_use_id": u["id"], "content": truncate(out)}
+            self.ui.tool_result(out if isinstance(out, str) else out[0]["text"], err)  # a list: read's text and image
+            r = {"type": "tool_result", "tool_use_id": u["id"], "content": truncate(out) if isinstance(out, str) else out}
             results.append({**r, "is_error": True} if err else r)
         return results, interrupted
 

@@ -3,11 +3,13 @@
 A tool is a JSON schema the model sees and a Python function the harness runs.
 `edit` refuses to touch a file that changed since the model last read it.
 """
+import base64
 import contextlib
 import difflib
 import fnmatch
 import os
 import re
+import secrets
 import shlex
 import shutil
 import signal
@@ -15,20 +17,24 @@ import subprocess
 import time
 from pathlib import Path
 
+from . import session
+
 MAX_OUT = 30_000  # characters returned to the model per tool call
 WINDOWS = os.name == "nt"
 WIN_RUNS = {".exe", ".com", ".bat", ".cmd", ".ps1", ".vbs", ".msi"}  # Windows has no execute bit: these run by name
 
 
-def git_bash() -> str | None:
-    """The model writes bash, so on Windows mini runs Git for Windows' bash (or MINI_BASH), else falls back to cmd.
-    Fixed absolute paths only: a lookup on PATH would search the project folder first, which the project controls."""
+def find_bash() -> str | None:
+    """The model writes bash. POSIX: bash from PATH, since /bin/sh is dash on Debian and Ubuntu. Windows: Git for
+    Windows' bash (or MINI_BASH), at fixed paths, since a lookup there searches the project folder first.
+    Absolute paths only: a relative PATH entry is the project folder, which the project controls."""
     tries = [os.environ.get("MINI_BASH", ""), os.path.join(os.environ.get("ProgramFiles", r"C:\Program Files"), r"Git\bin\bash.exe"),
-             os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Git\bin\bash.exe")]
+             os.path.join(os.environ.get("LOCALAPPDATA", ""), r"Programs\Git\bin\bash.exe")] if WINDOWS else [shutil.which("bash") or ""]
     return next((p for p in tries if os.path.isabs(p) and os.path.isfile(p)), None)
 
 
-BASH = git_bash() if WINDOWS else None  # None: POSIX /bin/sh, or cmd.exe on Windows without Git Bash
+BASH = find_bash()  # None: /bin/sh on POSIX, cmd.exe on Windows
+IMAGE_PX = 3000  # the API's per-side limit once a request holds over 20 images; a transcript can't drop one later
 
 
 class ToolError(Exception):
@@ -65,6 +71,41 @@ def run_shell(command: str, cwd, timeout: int):
         proc.wait()
         raise
     return proc.returncode, out, err
+
+
+def start_job(command: str, cwd) -> str:
+    """Detached in its own session, so neither the call's timeout nor Ctrl-C kills it; the log says when it ends."""
+    if WINDOWS:
+        raise ToolError("background isn't supported on Windows: run it without background, or ask the user to start it.")
+    log = session.HOME / "jobs" / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(2)}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("wb") as out:
+        proc = subprocess.Popen([BASH or "/bin/sh", "-c", 'eval "$1"; echo "[exit $?]"', "job", command], cwd=cwd,
+                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                env={**os.environ, "PAGER": "cat"}, start_new_session=True)
+    return (f"Started in the background: pid {proc.pid}, output in {log} (it ends with [exit N] when the job is done). "
+            f"Check it with tail {log} or kill -0 {proc.pid}; stop it with kill -- -{proc.pid}.")
+
+
+def image_info(data: bytes) -> tuple[str, int, int] | None:
+    """(media type, width, height) from the header, for the formats the API takes; 0x0 if the size can't be read."""
+    le, be = (lambda a, b: int.from_bytes(data[a:b], "little")), (lambda a, b: int.from_bytes(data[a:b], "big"))
+    if data[:8] == b"\x89PNG\r\n\x1a\n":
+        return "image/png", be(16, 20), be(20, 24)
+    if data[:6] in (b"GIF87a", b"GIF89a"):
+        return "image/gif", le(6, 8), le(8, 10)
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return ("image/webp", *{b"VP8X": (le(24, 27) + 1, le(27, 30) + 1), b"VP8 ": (le(26, 28) & 0x3FFF, le(28, 30) & 0x3FFF),
+                                b"VP8L": ((le(21, 25) & 0x3FFF) + 1, (le(21, 25) >> 14 & 0x3FFF) + 1)}.get(data[12:16], (0, 0)))
+    if data[:3] != b"\xff\xd8\xff":
+        return None
+    i = 2
+    while i + 9 <= len(data) and data[i] == 0xFF:  # JPEG: walk the segments to the start-of-frame, which has the size
+        m = data[i + 1]
+        if 0xC0 <= m <= 0xCF and m not in (0xC4, 0xC8, 0xCC):
+            return "image/jpeg", be(i + 7, i + 9), be(i + 5, i + 7)
+        i += 1 if m == 0xFF else 2 + be(i + 2, i + 4)  # 0xFF: a fill byte
+    return "image/jpeg", 0, 0
 
 
 def truncate(text: str) -> str:
@@ -113,6 +154,10 @@ class Approver:
         self.use_judge, self.judge, self.reason = use_judge, None, ""  # judge(kind, detail) -> (allow|deny|ask, why)
         self.allow = [shlex.split(a) for a in allow if a.strip()]
 
+    @property
+    def mode(self) -> str:
+        return "yes" if self.auto else "judge" if self.use_judge else "ask"
+
     def pre_approved(self, command: str, private=False) -> bool:
         if self.SHELL & set(command):
             return False
@@ -159,6 +204,7 @@ class LocalTools:
         self.cwd = Path(cwd).resolve()
         self.approver = approver
         self.seen: dict[Path, float] = {}  # path -> mtime when the model last read or wrote it
+        self.jobs = (session.HOME / "jobs").resolve()  # background job logs: start_job writes them
 
     def _path(self, p: str) -> Path:
         if WINDOWS and re.match(r"/[a-zA-Z](/|$)", p):  # Git Bash spells C:\x as /c/x
@@ -193,9 +239,10 @@ class LocalTools:
         return bool(self.SECRET_DIRS.intersection(parts) or self.SECRET.search(parts[-1] if parts else ""))
 
     def _private(self, path: Path) -> bool:
-        """Reading asks first outside the working directory, and for files that may hold secrets anywhere:
-        whatever the model reads goes to the API and into the session file."""
-        return (self.cwd != path and self.cwd not in path.parents) or self._secret(path)
+        """Reading asks first outside the working directory (except background job logs), and for files that may
+        hold secrets anywhere: whatever the model reads goes to the API and into the session file."""
+        outside = self.cwd != path and self.cwd not in path.parents and self.jobs not in path.parents
+        return outside or self._secret(path)  # job logs hold the output of commands that were already approved
 
     def _words(self, command: str) -> list[Path] | None:
         """The paths a command names (every word after the first that isn't a flag); None if it can't be split."""
@@ -203,7 +250,7 @@ class LocalTools:
             if os.name == "nt":  # shlex eats the backslashes in C:\\x\\.env, hiding the secret's name: read them as /
                 command = command.replace("\\", "/")
             return [self._path(w) for w in shlex.split(command)[1:] if not w.startswith("-")]
-        except ValueError:
+        except (ValueError, RuntimeError):  # RuntimeError: ~word names no user, or there's no home directory
             return None
 
     def _names_private(self, command: str) -> bool:
@@ -216,7 +263,7 @@ class LocalTools:
         runs = path.suffix.casefold() in WIN_RUNS if WINDOWS else os.access(path, os.X_OK)  # Windows: every file is X_OK
         return not self._inside(path) or (path.exists() and runs)
 
-    def read(self, path: str, offset: int = 1, limit: int = 2000) -> str:
+    def read(self, path: str, offset: int = 1, limit: int = 2000) -> str | list:
         p = self._path(path)
         if self._private(p) and not self.approver.ok("read", str(p), secret=self._secret(p)):
             raise ToolError("User denied this read (outside the project, or a file that may hold secrets)."
@@ -226,9 +273,19 @@ class LocalTools:
         if not p.is_file():
             raise ToolError("Not a regular file.")
         if p.stat().st_size > 5_000_000:
-            raise ToolError("File is over 5 MB. Use bash (head, tail, grep) to look at parts of it.")
-        lines = p.read_text(encoding="utf-8", errors="replace").splitlines()
+            raise ToolError("File is over 5 MB. Use bash (head, tail, grep) to look at parts of it; for an image, "
+                            "make a smaller copy.")
+        data = p.read_bytes()
         self.seen[p] = p.stat().st_mtime
+        if (image := image_info(data)):
+            kind, w, h = image
+            if not w or not h or max(w, h) > IMAGE_PX:  # a bad image in the transcript would fail every later request
+                raise ToolError(f"Can't show this image ({f'{w}x{h} px' if w and h else 'size unreadable'}): images go "
+                                f"to the model only up to {IMAGE_PX} px on a side. Make a smaller copy with bash and read "
+                                f"that (macOS: sips -Z {IMAGE_PX} <in> --out <out>; elsewhere ImageMagick or Pillow).")
+            return [{"type": "text", "text": f"{p.name}: {kind}, {w}x{h} px"},
+                    {"type": "image", "source": {"type": "base64", "media_type": kind, "data": base64.b64encode(data).decode()}}]
+        lines = data.decode("utf-8", errors="replace").splitlines()
         start, shown, size = max(offset, 1), [], 0
         for i, line in enumerate(lines[start - 1:start - 1 + max(limit, 1)], start):
             numbered = f"{i:>5}\t{line}"
@@ -315,10 +372,12 @@ class LocalTools:
                             + "\n[stopped early (500 results, 30,000 characters or 30 s): narrow the search]")
         return "\n".join(hits) or "[no matches]"
 
-    def bash(self, command: str, timeout: int = 120) -> str:
+    def bash(self, command: str, timeout: int = 120, background: bool = False) -> str:
         secret = any(self._secret(p) for p in self._words(command) or [])  # names a secret file: you decide
         if not self.approver.ok("bash", command, self._names_private(command), secret):
             raise ToolError("User denied this command." + self.approver.reason)
+        if background:
+            return start_job(command, self.cwd)
         try:
             code, stdout, stderr = run_shell(command, self.cwd, max(timeout, 1))
         except subprocess.TimeoutExpired:
@@ -335,18 +394,17 @@ def schema(props: dict, required: list) -> dict:
 
 SCHEMAS = {
     "read": {
-        "description": "Read a text file, or list a directory. Paths are relative to the working directory. Output "
-                       "lines start with a line number and a tab; that prefix is not part of the file. Long files "
-                       "come in pages of about 30,000 characters; the last line says which offset to pass next. Reading "
-                       "outside the working directory, or a file that may hold secrets (.env, keys, credentials), asks "
-                       "the user, who may say no; don't read secrets unless the task needs them.",
+        "description": "Read a text file or an image (PNG, JPEG, GIF or WebP, up to 3000 px on a side: you see the "
+                       "picture), or list a directory. Paths are relative to the working directory. Output lines start "
+                       "with a line number and a tab; that prefix is not part of the file. Long files come in pages of "
+                       "about 30,000 characters; the last line says which offset to pass next. Don't read secrets "
+                       "unless the task needs them.",
         **schema({"path": {"type": "string"},
                   "offset": {"type": "integer", "description": "First line to show, 1-based (default 1)"},
                   "limit": {"type": "integer", "description": "Lines to show (default 2000)"}}, ["path"])},
     "write": {
         "description": "Create a file, or replace a whole file. To overwrite an existing file, read it first; for "
-                       "small changes use edit. Writing outside the working directory, into dot-folders, or to "
-                       "files that run later (Makefile, conftest.py, mcp.json, executables) asks the user, who may say no.",
+                       "small changes use edit.",
         **schema({"path": {"type": "string"}, "content": {"type": "string"}}, ["path", "content"])},
     "edit": {
         "description": "Replace exact text in a file you have read since it last changed. `old` must match the file "
@@ -360,14 +418,17 @@ SCHEMAS = {
         "description": "Run a shell command in the working directory and get stdout, stderr and the exit code. Use "
                        "it for git, tests and builds; search files with the find tool instead. There is no terminal: "
                        "commands get no input, so interactive programs end at once. Output over 30,000 characters is cut in the "
-                       "middle. Most commands ask the user first and can be denied; plain reads such as ls, cat "
-                       "and head of project files, without pipes or redirects, run without asking.",
+                       "middle. The call waits while anything holds the command's output open, so a job left running "
+                       "with & keeps it waiting, and a timeout kills the job with its whole process group. For servers, "
+                       "long builds and other long jobs, set background: the command starts detached, writes to a log "
+                       "file, and the call returns at once with the pid and the log's path.",
         **schema({"command": {"type": "string"},
-                  "timeout": {"type": "integer", "description": "Seconds before the command is killed (default 120)"}},
+                  "timeout": {"type": "integer", "description": "Seconds before the command is killed (default 120)"},
+                  "background": {"type": "boolean", "description": "Start it detached and return at once (default false)"}},
                  ["command"])},
     "find": {
-        "description": "Find files by name, or lines by content (path:line: text), in a folder or one file. Read-only; "
-                       "asks the user only outside the working directory. Paths come back relative to the working directory. Skips dot-folders, "
+        "description": "Find files by name, or lines by content (path:line: text), in a folder or one file. Read-only. "
+                       "Paths come back relative to the working directory. Skips dot-folders, "
                        "node_modules and __pycache__, symlinked folders, and the contents of files that may hold secrets. Stops at 500 results or 30 seconds.",
         **schema({"name": {"type": "string",
                            "description": "Glob matched against file names only (no /), such as *.py; default *"},
@@ -376,4 +437,39 @@ SCHEMAS = {
                  [])},
 }
 
-WEB_SEARCH = {"type": "web_search_20260209", "name": "web_search"}
+# What needs approval, per tool. The sentence about it is written for the session's permissions, since a model told
+# it may be denied believes it is, even when everything is approved.
+GATED = {"bash": "Any command but plain reads (ls, cat or head of project files, read-only git; no pipes or redirects)",
+         "read": "Reading outside the working directory, or a file that may hold secrets (.env, keys, credentials),",
+         "write": "Writing outside the working directory, into dot-folders, or to files that run later (Makefile, "
+                  "conftest.py, mcp.json, executables)",
+         "find": "Searching outside the working directory"}
+
+
+def gate(ap: Approver, tool: str) -> str:
+    what = GATED[tool]
+    if ap.auto:
+        return f"{'Every command' if tool == 'bash' else what} runs without asking: the user allowed every action."
+    if ap.use_judge and tool != "write":  # the judge never decides gated writes
+        rule = (f"{what} needs approval: a reviewer model decides and may say no; secrets, and calls it's unsure about, "
+                + ("go to the user." if ap.interactive else "are denied, since nobody can approve in this run."))
+    else:
+        rule = f"{what} " + ("asks the user, who may say no." if ap.interactive else "is denied: nobody can approve in this run.")
+    pre = ", ".join(shlex.join(a) for a in ap.allow) if tool == "bash" else ""
+    return rule + (f" The user pre-approved commands starting with: {pre}." if pre else "")
+
+
+def local_schemas(names, ap: Approver) -> list[dict]:
+    return [{"name": x, **SCHEMAS[x], "description": SCHEMAS[x]["description"] + (" " + gate(ap, x) if x in GATED else "")}
+            for x in names]
+
+
+def approval_note(ap: Approver) -> str:
+    """The tool list is frozen per session, so a change of permissions is told in a system message."""
+    rules = "every call runs without asking." if ap.auto else " ".join(gate(ap, x) for x in GATED)
+    return f"Permissions are now {ap.mode}. This replaces what the tool descriptions say about approval: {rules}"
+
+
+# Direct calls only: from 20260209 on, the default runs searches from Anthropic's code-execution sandbox, which comes
+# along unasked, and the model then takes that sandbox for the user's machine.
+WEB_SEARCH = {"type": "web_search_20260209", "name": "web_search", "allowed_callers": ["direct"]}

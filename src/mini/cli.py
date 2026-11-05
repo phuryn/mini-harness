@@ -10,7 +10,7 @@ import anthropic
 from .ext import MCPHub, find_skills
 from .loop import OTHER, Agent
 from .session import Session, list_sessions
-from .tools import CONTROL, Approver, printable
+from .tools import CONTROL, Approver, approval_note, printable
 
 DIM, YEL, CYA, RED, OFF = "\033[2m", "\033[33m", "\033[36m", "\033[31m", "\033[0m"
 
@@ -180,7 +180,7 @@ def main():
             if args.json:
                 print(json.dumps({**result, "session": agent.session.id, "cost": round(agent.cost, 4),
                                   "answer": agent.final_text()}))
-            if result.get("stop") in ("error", "interrupted", "pause_turn"):  # a script must see the run didn't finish
+            if result.get("stop") in ("error", "interrupted", "pause_turn", "max_tokens"):  # a script must see the run didn't finish
                 sys.exit(1)
             return
         repl(agent, new)
@@ -195,8 +195,7 @@ def repl(agent, new):
         import readline  # noqa: F401  (line editing and history)
     except ImportError:
         pass
-    mode = "yes" if agent.approver.auto else "judge" if agent.approver.use_judge else "ask"
-    print(f"{DIM}mini · {agent.model} · permissions {mode} · session {agent.session.id} · /help for commands{OFF}")
+    print(f"{DIM}mini · {agent.model} · permissions {agent.approver.mode} · session {agent.session.id} · /help for commands{OFF}")
     while True:
         try:
             line = input(f"\n{CYA}›{OFF} ").strip()
@@ -241,9 +240,10 @@ def command(agent, line, new):
         if agent.goal:
             print_goal(agent.goal)
     elif cmd == "/permissions":
-        if rest in ("ask", "judge", "yes"):
+        if rest in ("ask", "judge", "yes") and rest != agent.approver.mode:
             agent.approver.auto, agent.approver.use_judge = rest == "yes", rest == "judge"
-        print(f"permissions {'yes' if agent.approver.auto else 'judge' if agent.approver.use_judge else 'ask'} · ask, judge or yes")
+            agent.pending_system.append(approval_note(agent.approver))  # the tool descriptions are frozen
+        print(f"permissions {agent.approver.mode} · ask, judge or yes")
     elif cmd == "/effort":
         if rest and rest not in agent.efforts:
             print(f"{agent.model} has no effort {rest}")

@@ -1481,3 +1481,174 @@ def test_judge_is_the_default_only_when_its_key_is_set_and_someone_watches(ws, m
         except Exception:
             pass  # the stub agent can't run a prompt; only the approver's settings matter here
         assert seen["use_judge"] is judge, argv
+
+
+# --- 1.0.2: images, honest approval text, the output cap, background jobs, the shell -----------
+
+def png(w, h):
+    """A real PNG, all white, from the standard library."""
+    import struct
+    import zlib
+    chunk = lambda t, d: struct.pack(">I", len(d)) + t + d + struct.pack(">I", zlib.crc32(t + d))
+    raw = b"".join(b"\x00" + b"\xff" * w for _ in range(h))
+    return (b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", struct.pack(">IIBBBBB", w, h, 8, 0, 0, 0, 0))
+            + chunk(b"IDAT", zlib.compress(raw)) + chunk(b"IEND", b""))
+
+
+def test_an_image_read_reaches_the_model_as_an_image_block(ws):
+    import base64
+    (ws / "shot.png").write_bytes(png(40, 30))
+    t = tool("read", {"path": "shot.png"})
+    agent, client, _ = make(ws, [reply(t, stop="tool_use"), reply(text("a white box"))])
+    agent.turn("what's in shot.png?")
+    assert_append_only(client.requests)
+    result = client.requests[1]["messages"][-1]["content"][0]
+    label, image = result["content"]
+    assert "40x30 px" in label["text"] and "is_error" not in result
+    assert image["type"] == "image" and image["source"]["media_type"] == "image/png"
+    assert base64.b64decode(image["source"]["data"]) == (ws / "shot.png").read_bytes()
+    _, loaded, _, _, _ = Session(agent.session.path).load()
+    assert loaded == agent.messages  # the image is in the session file, so resume replays it
+
+
+def test_image_sizes_come_from_the_header_and_big_ones_are_refused(ws):
+    from mini.tools import image_info
+    jpeg = (b"\xff\xd8\xff\xe0" + (16).to_bytes(2, "big") + b"JFIF\x00" + bytes(9) + b"\xff\xff"  # APP0, a fill byte
+            + b"\xff\xc2" + (17).to_bytes(2, "big") + b"\x08" + (300).to_bytes(2, "big") + (400).to_bytes(2, "big") + bytes(10))
+    webp = lambda kind, size: b"RIFF" + bytes(4) + b"WEBP" + kind + bytes(4) + size
+    assert image_info(png(5, 7)) == ("image/png", 5, 7)
+    assert image_info(jpeg) == ("image/jpeg", 400, 300)
+    assert image_info(b"GIF89a" + (12).to_bytes(2, "little") + (9).to_bytes(2, "little")) == ("image/gif", 12, 9)
+    assert image_info(webp(b"VP8X", bytes(4) + (639).to_bytes(3, "little") + (479).to_bytes(3, "little"))) == ("image/webp", 640, 480)
+    assert image_info(webp(b"VP8L", b"\x2f" + (99 | 49 << 14).to_bytes(4, "little"))) == ("image/webp", 100, 50)
+    assert image_info(webp(b"VP8 ", bytes(6) + (320).to_bytes(2, "little") + (200).to_bytes(2, "little"))) == ("image/webp", 320, 200)
+    assert image_info(b"plain text") is None and image_info(b"\xff\xd8\xff") == ("image/jpeg", 0, 0)
+    t = LocalTools(str(ws), Approver(interactive=False))
+    (ws / "wide.png").write_bytes(png(3001, 2))  # over 20 images, the API refuses any past 3000 px, and for good
+    (ws / "odd.jpg").write_bytes(b"\xff\xd8\xff\x00")
+    for name, why in [("wide.png", "3001x2 px"), ("odd.jpg", "size unreadable")]:
+        with pytest.raises(ToolError, match=why):
+            t.read(name)
+    (ws / "notes.txt").write_text("not an image\n")
+    assert t.read("notes.txt") == "    1\tnot an image"
+    with pytest.raises(ToolError, match="denied this read"):  # the read gate is the same for images
+        t.read(str(ws.parent / "elsewhere.png"))
+
+
+def descriptions(ws, approver):
+    agent = Agent(str(ws), Session.create(str(ws)), QuietUI(), approver, client=FakeClient([]))
+    return {t["name"]: t.get("description", "") for t in agent.tools}
+
+
+def test_tool_descriptions_match_the_permissions(ws):
+    yes = descriptions(ws, Approver(auto=True))
+    assert "Every command runs without asking" in yes["bash"]
+    assert all("runs without asking" in yes[x] and "may say no" not in yes[x] for x in ("bash", "read", "write", "find"))
+    ask = descriptions(ws, Approver())
+    assert all("asks the user, who may say no" in ask[x] for x in ("bash", "read", "write", "find"))
+    headless = descriptions(ws, Approver(interactive=False, allow=("python3 -m pytest",)))
+    assert all("is denied: nobody can approve" in headless[x] for x in ("bash", "read", "write", "find"))
+    assert "pre-approved commands starting with: python3 -m pytest." in headless["bash"]
+    judge = descriptions(ws, Approver(use_judge=True))
+    assert all("a reviewer model decides" in judge[x] for x in ("bash", "read", "find"))
+    assert "asks the user" in judge["write"]  # the judge never decides gated writes
+    assert "with & keeps it waiting" in yes["bash"] and "process group" in yes["bash"] and "background" in yes["bash"]
+
+
+def test_permissions_change_is_a_note_and_the_tools_stay_frozen(ws):
+    from mini.cli import command
+    agent, client, _ = make(ws, [reply(text("a")), reply(text("b")), reply(text("c"))])
+    agent.turn("one")
+    command(agent, "/permissions ask", None)
+    command(agent, "/permissions ask", None)  # no change, no second note
+    agent.turn("two")
+    assert_append_only(client.requests)
+    notes = [m["content"] for m in client.requests[1]["messages"] if m["role"] == "system"]
+    assert len(notes) == 1 and notes[0].startswith("Permissions are now ask.") and "asks the user" in notes[0]
+    again, _, _ = make(ws, [], session=Session(agent.session.path))
+    assert again.tools == agent.tools and again.pending_system == []  # started in yes, resumed in yes: nothing to say
+    headless = Agent(str(ws), Session(agent.session.path), QuietUI(), Approver(interactive=False), client=FakeClient([]))
+    assert headless.tools == agent.tools and "Permissions are now ask" in headless.pending_system[-1]
+
+
+def test_output_cap_without_a_tool_call_continues_twice_then_stops(ws):
+    script = [reply(thinking("t1"), stop="max_tokens"), reply(thinking("t2"), text("half an ans"), stop="max_tokens"),
+              reply(text("the answer"))]
+    agent, client, ui = make(ws, script)
+    assert agent.turn("hard question") == "end_turn" and agent.final_text() == "the answer"
+    r = client.requests
+    assert len(r) == 3
+    assert_append_only(r)
+    assert r[1]["messages"][-2] == {"role": "assistant", "content": [thinking("t1")]}  # kept exactly as returned
+    assert "still thinking" in r[1]["messages"][-1]["content"]
+    assert "cut off mid-text" in r[2]["messages"][-1]["content"]
+    assert [e.get("by") for e in agent.session.events() if e["kind"] == "msg"][-2:] == ["harness", "harness"]
+    agent, client, ui = make(ws, [reply(thinking(), stop="max_tokens") for _ in range(4)])
+    assert agent.turn("harder") == "max_tokens" and len(client.requests) == 3
+    assert_append_only(client.requests)
+    assert agent.messages[-1]["role"] == "assistant" and any("output limit" in w for w in ui.warnings)
+    agent, client, _ = make(ws, [reply(thinking(), stop="max_tokens"), reply(text("ok"))])
+    agent.turn("first")
+    agent.turn("second")  # a new turn gets its own two
+    assert len(client.requests) == 3
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX: Windows says it can't")
+def test_background_job_returns_at_once_and_outlives_the_call(ws, tmp_path):
+    import time
+    t = LocalTools(str(ws), Approver(auto=True))
+    start = time.monotonic()
+    out = t.bash("sleep 2; echo done > out.txt", background=True)
+    assert time.monotonic() - start < 1.5 and not (ws / "out.txt").exists()
+    m = re.search(r"pid (\d+), output in (\S+) ", out)
+    pid, log = int(m[1]), Path(m[2])
+    assert os.getsid(pid) == pid and log.parent == tmp_path / "home" / "jobs"  # its own session; the log outside
+    end = time.monotonic() + 10
+    while "[exit 0]" not in log.read_text() and time.monotonic() < end:
+        time.sleep(0.05)
+    assert (ws / "out.txt").read_text() == "done\n" and log.read_text().strip() == "[exit 0]"
+    assert "[exit 0]" in LocalTools(str(ws), Approver(interactive=False)).bash(f"tail {log}")  # job logs read freely
+    with pytest.raises(ToolError, match="denied"):  # the gate is the same as for any command
+        LocalTools(str(ws), Approver(interactive=False)).bash("sleep 1; true", background=True)
+
+
+@pytest.mark.skipif(os.name != "nt", reason="Windows only")
+def test_background_jobs_say_they_need_posix(ws):
+    with pytest.raises(ToolError, match="Windows"):
+        LocalTools(str(ws), Approver(auto=True)).bash("echo hi", background=True)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX; Windows has its own test")
+def test_the_bash_tool_runs_bash_when_there_is_one(ws, monkeypatch):
+    import shutil
+    import mini.tools as mt
+    if shutil.which("bash"):
+        assert mt.BASH and os.path.basename(mt.BASH) == "bash"
+        assert LocalTools(str(ws), Approver(auto=True)).bash('echo ${BASH_VERSION:+bash} | cat; echo ${PIPESTATUS[0]}') == "bash\n0"
+        assert "(the bash tool runs bash)" in make(ws, [])[0].system
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    assert mt.find_bash() is None  # then /bin/sh, and the system prompt says so
+    monkeypatch.setattr(shutil, "which", lambda name: "bash")  # a relative PATH entry would pick the project's own
+    assert mt.find_bash() is None
+
+
+def test_no_ask_user_when_nobody_can_answer(ws):
+    headless = descriptions(ws, Approver(interactive=False))
+    assert "ask_user" not in headless and {"bash", "goal_done", "task"} <= set(headless)
+    chat, _, _ = make(ws, [])
+    assert "ask_user" in [t["name"] for t in chat.tools]
+    resumed = Agent(str(ws), Session(chat.session.path), QuietUI(), Approver(interactive=False), client=FakeClient([]))
+    assert resumed.tools == chat.tools  # the frozen list rules; the call itself says nobody can answer
+
+
+def test_a_tilde_word_for_no_user_does_not_crash_the_command(ws):
+    assert LocalTools(str(ws), Approver(auto=True)).bash("echo ~nosuchuser_mini") == "~nosuchuser_mini"
+    assert LocalTools(str(ws), Approver(interactive=False))._names_private("cat ~nosuchuser_mini/x")  # unknown: it asks
+
+
+def test_web_search_is_called_directly_without_the_code_sandbox(ws):
+    agent, client, _ = make(ws, [reply(text("x"))])
+    agent.turn("hi")
+    tools = client.requests[0]["tools"]
+    assert {"type": "web_search_20260209", "name": "web_search", "allowed_callers": ["direct"]} in tools
+    assert "code_execution" not in json.dumps(tools)
