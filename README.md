@@ -77,7 +77,7 @@ One task was re-run. In build-cython-ext, the hidden test runs `uv run pytest`, 
 
 ## Install
 
-mini is a Python program, installed with [uv](https://docs.astral.sh/uv/), which also fetches Python 3.12+ if you don't have it. The repo is private for now, so you need access on GitHub; the install command asks you to sign in once.
+mini is a Python program, installed with [uv](https://docs.astral.sh/uv/), which also fetches Python 3.12+ if you don't have it.
 
 **macOS / Linux** (Terminal)
 
