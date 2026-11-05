@@ -146,7 +146,8 @@ class Agent:
             if said.rfind("Goal mode is on") > said.rfind("Goal mode is off") and not (self.goal and self.goal["status"] == "active"):
                 self.pending_system.append(GOAL_OFF.format(status=self.goal["status"] if self.goal else "cleared"))
             said, now = self.system + "\n" + said, approval(approver)  # the last word on approval, if not this one
-            if said.rfind(now) < max(said.rfind("Approval in this session"), 0):  # 0: a session from before 1.0.2
+            last = said.rfind("Approval in this session")  # -1: a session from before 1.0.2
+            if last < 0 or said[last:].split("\n", 1)[0] != now:
                 self.pending_system.append(now)
             self.local.held = sum(len(b["source"]["data"]) for m in self.messages if isinstance(m["content"], list)
                                   for r in m["content"] if isinstance(r.get("content"), list)

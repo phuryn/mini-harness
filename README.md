@@ -3,7 +3,7 @@
 
 # mini
 
-An agent harness built for teaching: about 1,200 lines of Python and two dependencies, small enough to read in one sitting.
+An agent harness built for teaching: about 1,300 lines of Python and two dependencies, small enough to read in one sitting.
 
 Other minimal harnesses exist, but none has goal mode, permissions, skills and MCP servers. I wanted a fully working one to explain how a harness is built, down to Anthropic's server-side compaction. That's why it runs on Claude and on other models that speak Anthropic's message format.
 
@@ -31,7 +31,7 @@ As of November 2026. Pi is built to be extended; mini is built to be read.
 
 | | **Mini Harness** | mini-swe-agent | nanocode | Pi | Codex CLI | Claude Code |
 |---|---|---|---|---|---|---|
-| Code | ~1,200 lines (Python) | ~4,000 lines (Python) | ~220 lines (one Python file) | ~115K lines (TypeScript; loop alone ~1,800) | ~1.4M lines (Rust) |  |
+| Code | ~1,300 lines (Python) | ~4,000 lines (Python) | ~220 lines (one Python file) | ~115K lines (TypeScript; loop alone ~1,800) | ~1.4M lines (Rust) |  |
 | Dependencies | 2 (anthropic, mcp) | 14 (litellm, pydantic, textual...) | 0 (standard library) | 22 (5 are its own packages) | 77 (52 are its own crates) |  |
 | Tools | 5 + web search (+ subagent, ask user, goal done) | bash only | 6 | 4 (+6 optional) | many | many |
 | Sessions | yes | no | no | yes, branching | yes, branching | yes, branching |
@@ -134,7 +134,7 @@ cd ~/some/project
 mini                                  # or start on another model: mini --model claude-sonnet-5-5
 ```
 
-**Unattended.** `-p` runs one prompt, prints the answer and exits. Nobody is there to approve risky actions, so they're denied unless `--allow` covers them.
+**Unattended.** `-p` runs one prompt, prints the answer and exits. Nobody is there to approve risky actions, so they're denied unless `--allow` covers them. It exits with code 1 when the run didn't finish (an error, an interrupt, the output limit) or, with `--goal`, when the goal isn't done, so a script can tell.
 
 ```bash
 cd ~/some/project

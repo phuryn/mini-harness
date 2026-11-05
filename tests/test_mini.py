@@ -1581,6 +1581,10 @@ def test_a_permissions_change_is_a_note_and_resume_tells_the_latest(ws):
     assert "nothing is denied" in first.pending_system[-1]
     first.turn("hi")
     assert Agent(str(ws), Session(old.path), QuietUI(), Approver(auto=True), client=FakeClient([])).pending_system == []
+    allowed = Agent(str(ws), Session.create(str(ws)), QuietUI(), Approver(allow=("pytest",)), client=FakeClient([]))
+    assert "pre-approved calls starting with: pytest" in allowed.system  # resumed without --allow: a prefix of that line
+    plain = Agent(str(ws), Session(allowed.session.path), QuietUI(), Approver(), client=FakeClient([]))
+    assert plain.pending_system and "pre-approved" not in plain.pending_system[-1]
 
 
 def test_output_cap_without_a_tool_call_continues_twice_then_stops(ws):
@@ -1672,6 +1676,9 @@ def test_a_tilde_word_for_no_user_does_not_crash_or_hide_the_other_words(ws):
     with pytest.raises(ToolError, match="denied"):  # a secret: never the judge's call, and headless nobody's
         LocalTools(str(ws), approver).bash("cat ~nosuchuser_mini ~/.ssh/id_rsa")
     assert asked == []
+    for word in ("~+/../outside.txt", "~-/outside.txt", "~nosuchuser_mini"):  # bash expands the first two
+        with pytest.raises(ToolError, match="denied"):  # cat is safe inside the project; these count as outside
+            LocalTools(str(ws), Approver(interactive=False)).bash(f"cat {word}")
 
 
 def test_web_search_is_called_directly_without_the_code_sandbox(ws):

@@ -222,8 +222,8 @@ class LocalTools:
             p = f"{p[1]}:/{p[3:]}"
         try:
             path = Path(p).expanduser()
-        except RuntimeError:  # ~word for no known user: a literal name, as bash keeps it
-            path = Path(p)
+        except RuntimeError:  # ~word Python can't expand; bash may (~+ is $PWD, ~- is $OLDPWD): outside, so it asks
+            path = Path("/", p)
         return (path if path.is_absolute() else self.cwd / path).resolve()
 
     # Files something else executes later; "head" and "config" because git treats any folder with
