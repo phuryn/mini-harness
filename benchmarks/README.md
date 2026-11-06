@@ -1,6 +1,6 @@
 # Benchmarks
 
-Results of Mini Harness against other agent harnesses on public benchmarks, one folder per benchmark and model, with every counted run in `trials.csv`. (`../bench/` is different: Mini's own five-task self-check.)
+Results of Mini Harness against other agent harnesses on public benchmarks, one folder per benchmark and model, with every counted run in `trials.csv`. ([`../smoke-test/`](../smoke-test/) is different: Mini's own five-task check, run while developing it.)
 
 | Benchmark | Model | Tasks × runs | Harnesses | Folder |
 |---|---|---|---|---|

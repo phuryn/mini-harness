@@ -3,4 +3,4 @@ __pycache__/
 .mini/
 .venv/
 *.pyc
-bench/.runs/
+smoke-test/.runs/

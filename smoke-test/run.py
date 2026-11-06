@@ -1,7 +1,7 @@
-"""Run each benchmark task in a fresh copy of its folder, in mini and in Claude Code, and record the results.
+"""Smoke test: run each task in a fresh copy of its folder, in mini and in Claude Code, and record the results.
 
-Usage: uv run python bench/run.py [--harness mini|mini-deepseek|claude|both] [--runs N] [--only id,id]
-Writes one JSON line per run to bench/results.jsonl.
+Usage: uv run python smoke-test/run.py [--harness mini|mini-deepseek|claude|both] [--runs N] [--only id,id]
+Writes one JSON line per run to smoke-test/results.jsonl.
 """
 import argparse
 import json
@@ -61,7 +61,7 @@ def main():
     for task in tasks:
         for h in harnesses:
             for n in range(args.runs):
-                work = Path(tempfile.mkdtemp(prefix=f"bench-{task['id']}-"))
+                work = Path(tempfile.mkdtemp(prefix=f"smoke-{task['id']}-"))
                 shutil.copytree(ROOT / "tasks" / task["id"], work, dirs_exist_ok=True)
                 env = {**os.environ, "PATH": VENV_BIN + os.pathsep + os.environ["PATH"],
                        "MINI_HOME": str(ROOT / ".runs" / "home"), **task.get("env", {})}
