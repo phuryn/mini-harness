@@ -25,7 +25,7 @@ V4.1 Flash 1017 at high effort on DeepSeek's own API, one account.
 ## Setup
 
 - Runs: October–November 2026, each harness on a fresh copy of both codebases, high effort.
-- Cost: at DeepSeek's list price.
+- Cost: tokens at DeepSeek's off-peak list price ($0.15 per million input tokens, $0.003 cached, $0.60 output).
 - The benchmark, its prompts and per-run receipts for its own leaderboard (which includes Claude Code, DeepSeek Harness,
   OpenCode 1.19.3 and Pi from this table) are in [phuryn/bug-hunt-bench](https://github.com/phuryn/bug-hunt-bench).
 
