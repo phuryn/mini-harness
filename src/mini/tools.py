@@ -62,7 +62,7 @@ def printable(text: str, lines: bool = False) -> str:
 def spawn(args, cwd, shell=False, command=None):
     """Start with no stdin, stdout and stderr into a new log under ~/.mini/jobs/. On POSIX it gets its own session
     (process group), so a Ctrl-C at the terminal doesn't reach it. A command goes in through the environment, not
-    the arguments, so the model's own `pkill -f` can't match the shell running it (nor can anyone read it in ps)."""
+    the arguments, so the model's own `pkill -f` can't match the shell running it."""
     log = session.HOME / "jobs" / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(6)}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     try:
@@ -98,7 +98,7 @@ def reap(proc, log=None):
 
 RUNNING = []  # commands left running at their timeout; background jobs aren't here, since they're meant to outlive mini
 JOBS = []  # background jobs started in this session; with RUNNING, every bash result says which are still going
-EVAL = 'eval "unset MINI_COMMAND\n$MINI_COMMAND"'  # expanded before eval runs, so the command and its children don't inherit it
+EVAL = 'eval "unset MINI_COMMAND;$MINI_COMMAND"'  # expanded before eval runs, so the command and its children don't inherit it
 
 
 @atexit.register
@@ -106,7 +106,7 @@ def stop_running():
     """When mini exits, however it ends (a script's end, sys.exit, Ctrl-C), so does what it left running: SIGTERM
     first, so a test run or a server can clean up, then SIGKILL for whatever in its group is still there a second
     later. The group, not the shell: what it started can outlive it, and while any of it lives, the id is still ours."""
-    alive = [p for p in RUNNING if p.returncode is None]  # not reaped yet, so the pid can't belong to something else
+    alive = [p for p in RUNNING if p.returncode is None or group_alive(p)]  # while its group lives, the id is still ours
     try:
         for proc in alive:
             stop(proc, signal.SIGTERM)
@@ -129,7 +129,8 @@ def run_shell(command: str, cwd, timeout: int, keep=False) -> tuple[int | None, 
     leaves running with & doesn't hold it. Ctrl-C kills the whole process group (tree, on Windows), and so does the
     timeout, unless keep: then the command runs on until it ends or mini exits, and the code is None. Never keep on
     Windows: without process groups it shares mini's console, so the user's next Ctrl-C would kill it anyway."""
-    proc, log = spawn([BASH, "-c", EVAL], cwd, command=command) if BASH else spawn(command, cwd, shell=True)
+    proc, log = (spawn([BASH or "/bin/sh", "-c", EVAL], cwd, command=command) if BASH or not WINDOWS
+                 else spawn(command, cwd, shell=True))
     try:
         code = proc.wait(timeout)
         if not keep and not WINDOWS:  # the goal's verify: whatever it left running with & goes too
@@ -137,8 +138,8 @@ def run_shell(command: str, cwd, timeout: int, keep=False) -> tuple[int | None, 
         return code, log.read_text(encoding="utf-8", errors="replace")
     except BaseException as e:
         if keep and isinstance(e, subprocess.TimeoutExpired):  # left running, like a background job
-            RUNNING.append(proc)
             proc.log = log
+            RUNNING.append(proc)
             reap(proc, log)
             return None, (f"[still running after {timeout}s as pid {proc.pid}, until it ends or mini exits; its output goes "
                           f"on in {log}, which ends with [exit N] when it's done. Stop it with kill -- -{proc.pid}]\n"
@@ -171,10 +172,16 @@ def start_job(command: str, cwd) -> str:
 
 
 def still_running(earlier) -> str:
-    """A line on what earlier calls left running, so the model needn't remember or poll for it."""
-    live = [p for p in earlier if p.poll() is None]
-    return ("\n[still running from earlier calls: " + "; ".join(f"pid {p.pid}, log {p.log}" for p in live)
-            + ". Wait for one with: while kill -0 PID 2>/dev/null; do sleep 5; done]") if live else ""
+    """What earlier calls left running, and what has ended since a result last listed it, so the model needn't poll.
+    A job counts while any of its group lives: a plain kill of its pid stops only the shell, not what it started."""
+    live = [p for p in earlier if p.poll() is None or group_alive(p)]
+    ended = [p for p in earlier if p not in live and getattr(p, "listed", False)]
+    for p in earlier:
+        p.listed = p in live
+    return ("".join(f"\n[ended since the last call: pid {p.pid}, log {p.log}]" for p in ended)
+            + ("\n[still running from earlier calls: " + "; ".join(f"pid {p.pid}, log {p.log}" for p in live)
+               + ". Stop one with kill -- -PID; for one that should finish, wait with: "
+                 "while kill -0 -- -PID 2>/dev/null; do sleep 5; done]" if live else ""))
 
 
 def image_info(data: bytes) -> tuple[str, int, int] | None:

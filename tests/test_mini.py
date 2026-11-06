@@ -903,7 +903,6 @@ def test_deepseek_off_peak_halves_tokens_not_search(ws, monkeypatch, now, share)
     agent, _, _ = ds(ws, [reply(text("x"), model="deepseek-flash", u=u)])
     agent.turn("hi")
     assert agent.cost == pytest.approx((0.30 + 1.20) * share + 4 * 0.00075)
-    assert loop.rate({"prices": {}}) == 1.0  # no peak_utc: always the list price
 
 
 def test_deepseek_compaction_is_client_side_and_resumes(ws, monkeypatch):
@@ -2241,24 +2240,64 @@ def test_the_command_text_is_not_in_the_process_list_or_inherited(ws):
     assert log.read_text() == "none\n0\n[exit 0]\n"
 
 
+@pytest.fixture(autouse=True)
+def no_leftovers(monkeypatch):
+    """Each test starts with nothing left running from another: the notes list RUNNING and JOBS."""
+    import mini.tools as mt
+    monkeypatch.setattr(mt, "RUNNING", [])
+    monkeypatch.setattr(mt, "JOBS", [])
+
+
+def wait_until(check, within=5.0):
+    import time
+    end = time.monotonic() + within
+    while not check() and time.monotonic() < end:
+        time.sleep(0.05)
+    return check()
+
+
 @pytest.mark.skipif(os.name == "nt", reason="POSIX: nothing is left running on Windows")
-def test_every_bash_result_lists_what_earlier_calls_left_running(ws):
+def test_every_bash_result_lists_what_earlier_calls_left_running_and_says_when_it_ended(ws):
     import signal
+    import mini.tools as mt
     t = LocalTools(str(ws), Approver(auto=True))
-    kept = t.bash("sleep 3", timeout=1)
+    kept = t.bash("sleep 30", timeout=1)
     assert kept.startswith("[still running after 1s") and "from earlier calls" not in kept  # not listed twice
-    job = t.bash("sleep 3", background=True)
-    pids = [re.search(r"pid (\d+)", x)[1] for x in (kept, job)]
+    job = t.bash("sleep 30", background=True)
+    pids = [int(re.search(r"pid (\d+)", x)[1]) for x in (kept, job)]
     try:
         note = re.search(r"\[still running from earlier calls: (.*)\]$", t.bash("echo hi"))[1]
-        assert [re.findall(r"pid (\d+)", note)] == [pids] and "while kill -0 PID" in note and note.count(".log") == 2
-        assert re.fullmatch(r"hi\n\[still running from earlier calls: .*\]", t.bash("echo hi"))
+        assert [int(x) for x in re.findall(r"pid (\d+)", note)] == pids and note.count(".log") == 2
+        assert "Stop one with kill -- -PID" in note and "while kill -0 -- -PID" in note
+        os.kill(pids[0], signal.SIGTERM)  # a plain kill stops only the shell; the sleep it started runs on
+        assert wait_until(lambda: mt.RUNNING[0].returncode is not None)
+        assert f"still running from earlier calls: pid {pids[0]}," in t.bash("echo hi")  # so it's still listed
     finally:
         for pid in pids:
-            with contextlib.suppress(ProcessLookupError):
-                os.killpg(int(pid), signal.SIGKILL)
-    import time
-    end = time.monotonic() + 5
-    while "still running" in t.bash("echo hi") and time.monotonic() < end:  # reaped: the note goes away
-        time.sleep(0.1)
-    assert t.bash("echo hi") == "hi"
+            with contextlib.suppress(OSError):
+                os.killpg(pid, signal.SIGKILL)
+    assert wait_until(lambda: not any(mt.group_alive(p) for p in mt.RUNNING + mt.JOBS))
+    out = t.bash("echo hi")
+    assert re.fullmatch(r"hi(\n\[ended since the last call: pid \d+, log \S+\.log\]){2}", out), out
+    assert all(f"pid {p}," in out for p in pids)
+    assert t.bash("echo hi") == "hi"  # said once
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX: nothing is left running on Windows")
+def test_an_ended_job_is_announced_once(ws):
+    t = LocalTools(str(ws), Approver(auto=True))
+    pid = re.search(r"pid (\d+)", t.bash("sleep 1", background=True))[1]
+    assert f"still running from earlier calls: pid {pid}," in t.bash("echo a")
+    out = t.bash("sleep 2; echo later")
+    assert re.fullmatch(rf"later\n\[ended since the last call: pid {pid}, log \S+\.log\]", out), out
+    assert t.bash("echo b") == "b"
+
+
+@pytest.mark.parametrize("utc, share", [("2026-11-06 01:00", 1.0), ("2026-11-06 00:59", 0.5), ("2026-11-06 03:59", 1.0),
+                                        ("2026-11-06 04:00", 0.5), ("2026-11-06 06:00", 1.0), ("2026-11-06 10:00", 0.5),
+                                        ("2026-11-08 02:00", 0.5), ("2026-11-09 01:00", 1.0)])
+def test_deepseek_peak_hours_at_their_boundaries(monkeypatch, utc, share):
+    import calendar
+    monkeypatch.setattr(time, "time", lambda: calendar.timegm(time.strptime(utc, "%Y-%m-%d %H:%M")))
+    assert loop.rate(loop.model_config("deepseek-flash")) == share  # Fri 6 Nov; Sun 8 Nov; Mon 9 Nov
+    assert loop.rate({"prices": {}}) == 1.0  # no peak_utc: always the list price
