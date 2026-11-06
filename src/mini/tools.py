@@ -124,6 +124,11 @@ def run_shell(command: str, cwd, timeout: int, keep=False) -> tuple[int | None, 
                           + log.read_text(encoding="utf-8", errors="replace").strip())  # note first: the screen shows line one
         stop(proc)
         proc.wait()
+        for _ in range(60 if WINDOWS else 0):  # Windows can't delete the log until the killed children let go of it
+            with contextlib.suppress(OSError):
+                log.unlink(missing_ok=True)
+                break
+            time.sleep(0.05)
         raise
     finally:
         if proc not in RUNNING:  # done or killed; the log stays only for a command left running

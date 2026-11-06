@@ -1841,6 +1841,14 @@ def test_on_windows_the_timeout_kills_the_tree_with_taskkill(ws, tmp_path, monke
     monkeypatch.setattr(mt, "WINDOWS", True)  # no process groups there: left running, it would share mini's console
     killed = []  # taskkill on the whole tree, by its full path (here it kills the group for real)
     monkeypatch.setattr(subprocess, "run", lambda a, **k: killed.append(a) or os.killpg(int(a[-1]), signal.SIGKILL))
+    unlink, held = Path.unlink, [3]  # Windows refuses to delete the log while a killed child still has it open
+
+    def busy(self, **kw):
+        if self.suffix == ".log" and held[0]:
+            held[0] -= 1
+            raise PermissionError(13, "The process cannot access the file because it is being used by another process")
+        return unlink(self, **kw)
+    monkeypatch.setattr(Path, "unlink", busy)
     with pytest.raises(ToolError, match="Timed out after 1s, so it was stopped"):
         LocalTools(str(ws), Approver(auto=True)).bash("echo $$ > shell; sleep 30", timeout=1)
     shell = int((ws / "shell").read_text())
