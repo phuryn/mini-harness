@@ -3,6 +3,7 @@
 A tool is a JSON schema the model sees and a Python function the harness runs.
 `edit` refuses to touch a file that changed since the model last read it.
 """
+import atexit
 import base64
 import contextlib
 import difflib
@@ -14,6 +15,7 @@ import shlex
 import shutil
 import signal
 import subprocess
+import threading
 import time
 from pathlib import Path
 
@@ -62,33 +64,69 @@ def spawn(args, cwd, shell=False):
     (process group), so a Ctrl-C at the terminal doesn't reach it."""
     log = session.HOME / "jobs" / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(6)}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("wb") as out:
-        return subprocess.Popen(args, shell=shell, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                env={**os.environ, "PAGER": "cat"}, start_new_session=True), log
+    try:
+        with log.open("ab") as out:  # appended to, so nothing it writes late lands over the [exit N] that reap() adds
+            return subprocess.Popen(args, shell=shell, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                    env={**os.environ, "PAGER": "cat", "PYTHONUNBUFFERED": "1"}, start_new_session=True), log
+    except BaseException:  # e.g. the working directory is gone: no empty log left behind
+        log.unlink(missing_ok=True)
+        raise
+
+
+def stop(proc):
+    """Kill its whole process group (tree, on Windows)."""
+    if WINDOWS:  # no process groups; taskkill by full path, since a bare name would search the project first
+        subprocess.run([os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), r"System32\taskkill.exe"),
+                        "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
+    else:
+        with contextlib.suppress(OSError):  # already gone (macOS says EPERM when only a zombie is left)
+            os.killpg(proc.pid, signal.SIGKILL)
+
+
+def reap(proc, log=None):
+    """Wait for it in a thread, so it doesn't linger as a zombie that kill -0 still finds; then end its log with [exit N]."""
+    def wait():
+        code = proc.wait()
+        if log:
+            with contextlib.suppress(OSError), log.open("a", encoding="utf-8") as f:
+                f.write(f"[exit {code}]\n")
+    threading.Thread(target=wait, daemon=True).start()
+
+
+RUNNING = []  # commands left running at their timeout; background jobs aren't here, since they're meant to outlive mini
+
+
+@atexit.register
+def stop_running():
+    """When mini exits, however it ends (a script's end, sys.exit, Ctrl-C), so does what it left running."""
+    for proc in RUNNING:
+        if proc.returncode is None:  # not reaped yet, so the pid can't belong to something else by now
+            stop(proc)
 
 
 def run_shell(command: str, cwd, timeout: int, keep=False) -> tuple[int | None, str]:
     """Run a shell command and return (exit code, output). The call waits on the shell, not on its output, so a job it
     leaves running with & doesn't hold it. Ctrl-C kills the whole process group (tree, on Windows), and so does the
-    timeout, unless keep: then the command runs on, like a background job, and the code is None."""
+    timeout, unless keep: then the command runs on until it ends or mini exits, and the code is None. Never keep on
+    Windows: without process groups it shares mini's console, so the user's next Ctrl-C would kill it anyway."""
     proc, log = spawn([BASH, "-c", command] if BASH else command, cwd, shell=not BASH)
     try:
-        return proc.wait(timeout), log.read_text(encoding="utf-8", errors="replace")
+        code = proc.wait(timeout)
+        if not keep and not WINDOWS:  # the goal's verify: whatever it left running with & goes too
+            stop(proc)
+        return code, log.read_text(encoding="utf-8", errors="replace")
     except BaseException as e:
-        if keep and isinstance(e, subprocess.TimeoutExpired):  # Git Bash reads /F as a path, //F as /F
-            stop = f"taskkill {'//F //T //PID' if BASH else '/F /T /PID'} {proc.pid}" if WINDOWS else f"kill -- -{proc.pid}"
-            return None, (f"{log.read_text(encoding='utf-8', errors='replace').strip()}\n[still running after {timeout}s, "
-                          f"as pid {proc.pid}; its output continues in {log}. Stop it with {stop}]")
-        if WINDOWS:  # no process groups; taskkill by full path, since a bare name would search the project first
-            subprocess.run([os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), r"System32\taskkill.exe"),
-                            "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
-        else:
-            with contextlib.suppress(ProcessLookupError):  # already gone
-                os.killpg(proc.pid, signal.SIGKILL)
+        if keep and isinstance(e, subprocess.TimeoutExpired):  # left running, like a background job
+            RUNNING.append(proc)
+            reap(proc, log)
+            return None, (f"[still running after {timeout}s as pid {proc.pid}, until it ends or mini exits; its output goes "
+                          f"on in {log}, which ends with [exit N] when it's done. Stop it with kill -- -{proc.pid}]\n"
+                          + log.read_text(encoding="utf-8", errors="replace").strip())  # note first: the screen shows line one
+        stop(proc)
         proc.wait()
         raise
     finally:
-        if proc.returncode is not None:  # done or killed; the log stays only for a command left running
+        if proc not in RUNNING:  # done or killed; the log stays only for a command left running
             with contextlib.suppress(OSError):  # Windows: a job left running with & still holds it open
                 log.unlink()
 
@@ -99,6 +137,7 @@ def start_job(command: str, cwd) -> str:
         raise ToolError("background isn't supported on Windows: run it without background, or ask the user to start it.")
     # A subshell, so `exit 3` still logs [exit 3]; `set --` inside, so the command doesn't see itself as $1.
     proc, log = spawn([BASH or "/bin/sh", "-c", '(eval "set --\n$1"); echo "[exit $?]"', "job", command], cwd)
+    reap(proc)
     return (f"Started in the background: pid {proc.pid}, output in {log} (it ends with [exit N] when the job is done). "
             f"Check it with tail {log} or kill -0 {proc.pid}; stop it with kill -- -{proc.pid}.")
 
@@ -405,11 +444,15 @@ class LocalTools:
 
     def bash(self, command: str, timeout: int = 120, background: bool = False) -> str:
         secret = any(self._secret(p) for p in self._words(command) or [])  # names a secret file: you decide
-        if not self.approver.ok("bash", command, self._names_private(command), secret):
+        told = any(command.strip() == f"kill -- -{p.pid}" and p.returncode is None for p in RUNNING)  # the stop it was given
+        if not told and not self.approver.ok("bash", command, self._names_private(command), secret):
             raise ToolError("User denied this command." + self.approver.reason)
         if background:
             return start_job(command, self.cwd)
-        code, out = run_shell(command, self.cwd, max(timeout, 1), keep=True)
+        try:
+            code, out = run_shell(command, self.cwd, max(timeout, 1), keep=not WINDOWS)
+        except subprocess.TimeoutExpired:  # Windows only (see run_shell)
+            raise ToolError(f"Timed out after {timeout}s, so it was stopped.")
         return f"{out.strip()}\n[exit {code}]" if code else (out.strip() or "[no output]")
 
 
@@ -447,14 +490,16 @@ SCHEMAS = {
         "description": "Run a shell command in the working directory and get its output (stdout and stderr together) "
                        "and the exit code. Use it for git, tests and builds; search files with the find tool instead. "
                        "There is no terminal: commands get no input, so interactive programs end at once. Output over "
-                       "30,000 characters is cut in the middle. A command still running at the timeout isn't killed: "
-                       "it goes on in the background, and you get its output so far, its pid and the log file where "
-                       "its output continues. For servers, long builds and other long jobs, set background: the command "
-                       "starts detached, writes to a log file, and the call returns at once with the pid and the log's "
-                       "path. Commands other than plain reads (ls, cat or head of project files, read-only git; no pipes "
-                       "or redirects) go through approval.",
+                       "30,000 characters is cut in the middle. " + ("A command still running at the timeout is killed. "
+                       if WINDOWS else "A command still running at the timeout isn't killed: it goes on in the background "
+                       "until it ends or mini exits, and you get its pid, the log file where its output continues, and "
+                       "its output so far. ") + "For servers, long builds and other long jobs, set background: the "
+                       "command starts detached, writes to a log file, and the call returns at once with the pid and "
+                       "the log's path. Commands other than plain reads (ls, cat or head of project files, read-only "
+                       "git; no pipes or redirects) go through approval.",
         **schema({"command": {"type": "string"},
-                  "timeout": {"type": "integer", "description": "Seconds before it goes on in the background (default 120)"},
+                  "timeout": {"type": "integer", "description": "Seconds before " + (
+                      "it is killed" if WINDOWS else "it goes on in the background") + " (default 120)"},
                   "background": {"type": "boolean", "description": "Start it detached and return at once (default false). "
                                  "It runs detached already, so don't add & or nohup"}},
                  ["command"])},
