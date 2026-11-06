@@ -1,7 +1,7 @@
 """A scripted stand-in for the Anthropic client, so the loop's invariants can be tested offline.
 
-Each script item is a BetaMessage (returned), an exception (raised), or a
-callable that takes the request kwargs and returns one of those.
+Each script item is a BetaMessage (returned), an exception (raised), a Broken
+stream, or a callable that takes the request kwargs and returns one of those.
 """
 import copy
 import itertools
@@ -37,9 +37,15 @@ def tool(name, inp, tid=None):
     return {"type": "tool_use", "id": tid or f"toolu_{next(_ids)}", "name": name, "input": inp}
 
 
+class Broken:
+    """A stream that shows the reply's text, then raises `error`, or with no error just stops before message_stop."""
+    def __init__(self, msg, error=None):
+        self.msg, self.error = msg, error
+
+
 class _Stream:
-    def __init__(self, msg):
-        self.msg = msg
+    def __init__(self, msg, error=None, whole=True):
+        self.msg, self.error, self.whole = msg, error, whole
 
     def __enter__(self):
         return self
@@ -51,6 +57,10 @@ class _Stream:
         for b in self.msg.content:
             if b.type == "text":
                 yield SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text=b.text))
+        if self.error:
+            raise self.error
+        if self.whole:
+            yield SimpleNamespace(type="message_stop")
 
     def get_final_message(self):
         return self.msg
@@ -71,7 +81,8 @@ class _Messages:
 
     def stream(self, **kw):
         self.requests.append(copy.deepcopy(kw))
-        return _Stream(self._next(kw))
+        item = self._next(kw)
+        return _Stream(item.msg, item.error, whole=False) if isinstance(item, Broken) else _Stream(item)
 
     def create(self, **kw):
         self.creates.append(copy.deepcopy(kw))

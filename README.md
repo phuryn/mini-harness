@@ -226,7 +226,7 @@ Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.
 
 ## How it works
 
-- **The loop.** Send the conversation, stream the reply, run the tools the model asked for, send the results back, repeat until it stops asking. The rest is bookkeeping around that loop.
+- **The loop.** Send the conversation, stream the reply, run the tools the model asked for, send the results back, repeat until it stops asking. A reply that fails partway (overloaded, rate-limited, a server or network error) is tried again up to three times. The rest is bookkeeping around that loop.
 - **Append-only transcript.** The system prompt and tool list are frozen at session start; nothing already sent is ever edited. Current Claude models bind thinking blocks to everything before them, so an edit would break the conversation. Later instructions are appended as system messages.
 - **Sessions.** One JSONL file per conversation under `~/.mini/sessions/<project>/`. Resuming means reading it back; a crash mid-tool is repaired on resume, by appending.
 - **Every tool call gets an answer**, including failures, denials and interrupts, so the transcript stays valid.

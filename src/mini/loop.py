@@ -14,6 +14,7 @@ import os
 import re
 import secrets
 import subprocess
+import time
 import urllib.request
 from pathlib import Path
 
@@ -114,6 +115,16 @@ def need_key(model, client):
 
 def n(x) -> int:
     return x or 0
+
+
+def transient(e) -> bool:
+    """Worth another try: overloaded, rate-limited, a server error, a broken connection or stream; never a request the
+    API refused (validation, auth). The SDK retries these only before a stream starts. Mid-stream, an error event comes
+    with HTTP 200 and its type, and a dropped connection raises the HTTP library's own error."""
+    if isinstance(e, anthropic.APIStatusError):
+        return e.status_code == 429 or e.status_code >= 500 or e.type in ("overloaded_error", "rate_limit_error",
+                                                                            "api_error", "timeout_error")
+    return isinstance(e, (anthropic.APIConnectionError, ConnectionError)) or type(e).__module__.startswith("httpx")
 
 
 def clean(blocks: list[dict]) -> list[dict]:
@@ -228,14 +239,27 @@ class Agent:
         return kw
 
     def call(self, paused=()):
-        with self.client.beta.messages.stream(**self.request_args(paused)) as stream:
-            for ev in stream:
-                if ev.type == "content_block_delta":
-                    if ev.delta.type == "text_delta":
-                        self.ui.text(ev.delta.text)
-                    elif ev.delta.type == "thinking_delta":
-                        self.ui.thinking(ev.delta.thinking)
-            return stream.get_final_message()
+        """Stream one response. A transient failure gets three more tries, 2, 4 and 8 s apart. A failed attempt leaves
+        no trace in the transcript: turn() appends only a response that came back whole."""
+        for wait in (2, 4, 8, 0):
+            try:
+                with self.client.beta.messages.stream(**self.request_args(paused)) as stream:
+                    ev = None
+                    for ev in stream:
+                        if ev.type == "content_block_delta":
+                            if ev.delta.type == "text_delta":
+                                self.ui.text(ev.delta.text)
+                            elif ev.delta.type == "thinking_delta":
+                                self.ui.thinking(ev.delta.thinking)
+                    if getattr(ev, "type", None) != "message_stop":  # a stream cut off cleanly raises nothing
+                        raise ConnectionError("the stream ended before the response was complete")
+                    return stream.get_final_message()
+            except Exception as e:
+                if not wait or not transient(e):
+                    raise
+                self.ui.end_message()
+                self.ui.warn(f"request failed ({e}); retrying in {wait}s")
+                time.sleep(wait)  # Ctrl-C here interrupts the turn, as during the stream
 
     def track(self, resp):
         u = resp.usage

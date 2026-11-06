@@ -1878,3 +1878,57 @@ def test_output_cap_cut_offs_count_in_a_row_not_per_turn(ws):
     agent, client, _ = make(ws, script)
     assert agent.turn("long job") == "end_turn" and len(client.requests) == 6  # 1.0.2 stopped at the third, apart
     assert_append_only(client.requests)
+
+
+def api_error(cls, status, kind):
+    """What the SDK raises: before a stream, a class per HTTP status; mid-stream, HTTP 200 and the error's type."""
+    import httpx2
+    return cls(kind, response=httpx2.Response(status, request=httpx2.Request("POST", "https://api.anthropic.com/v1/messages")),
+               body={"type": "error", "error": {"type": kind, "message": kind}})
+
+
+def test_a_transient_failure_is_retried_and_leaves_no_trace(ws, monkeypatch):
+    import anthropic
+    import httpx2
+    import mini.loop as ml
+    from fake import Broken
+    waits = []
+    monkeypatch.setattr(ml.time, "sleep", waits.append)
+    overloaded = api_error(anthropic.APIStatusError, 200, "overloaded_error")
+    paused = reply(text("searching"), {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search",
+                                       "input": {"query": "x"}}, stop="pause_turn")
+    script = [paused, Broken(reply(text("half an ans")), overloaded), Broken(reply(text("half"))),  # error, then cut off
+              httpx2.ReadError("peer closed connection"), reply(text("whole"))]
+    agent, client, ui = make(ws, script)
+    agent.pending_system.append("note")
+    assert agent.turn("hi") == "end_turn" and agent.final_text() == "whole"
+    assert waits == [2, 4, 8] and sum("retrying in" in w for w in ui.warnings) == 3
+    assert all(r == client.requests[1] for r in client.requests[2:])  # each try sends exactly the same request
+    assert [m["role"] for m in agent.messages] == ["user", "system", "assistant", "assistant"]  # the pause, the answer
+    assert [e["kind"] for e in agent.session.events()] == ["meta", "msg", "msg", "usage", "usage", "msgs"]
+    assert_append_only(client.requests)
+
+    waits.clear()  # three retries, then the turn ends as before
+    agent, client, _ = make(ws, [api_error(anthropic.InternalServerError, 500, "api_error")] * 4)
+    assert agent.turn("hi") == "error" and len(client.requests) == 4 and waits == [2, 4, 8]
+    assert [m["role"] for m in agent.messages] == ["user", "assistant"]  # the placeholder
+
+    waits.clear()  # a request the API refused is never retried
+    for e in (api_error(anthropic.BadRequestError, 400, "invalid_request_error"),
+              api_error(anthropic.AuthenticationError, 401, "authentication_error"),
+              api_error(anthropic.APIStatusError, 200, "invalid_request_error"), RuntimeError("529")):
+        agent, client, _ = make(ws, [e, reply(text("never"))])
+        assert agent.turn("hi") == "error" and len(client.requests) == 1
+    assert waits == []
+    req = httpx2.Request("POST", "https://api.anthropic.com/v1/messages")
+    assert all(ml.transient(e) for e in (api_error(anthropic.RateLimitError, 429, "rate_limit_error"),
+                                          api_error(anthropic.OverloadedError, 529, "overloaded_error"),
+                                          anthropic.APIConnectionError(request=req), anthropic.APITimeoutError(req)))
+    assert not ml.transient(api_error(anthropic.RequestTooLargeError, 413, "request_too_large"))
+
+    def ctrl_c(_):
+        raise KeyboardInterrupt
+    monkeypatch.setattr(ml.time, "sleep", ctrl_c)  # Ctrl-C while it waits to retry
+    agent, client, _ = make(ws, [overloaded, reply(text("never"))])
+    assert agent.turn("hi") == "interrupted" and len(client.requests) == 1
+    assert [m["role"] for m in agent.messages] == ["user", "assistant"]
