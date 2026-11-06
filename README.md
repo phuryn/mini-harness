@@ -98,6 +98,12 @@ uv tool install git+https://github.com/phuryn/mini-harness
 
 Either way, the last command ends with `Installed 1 executable: mini`. Update later with `uv tool upgrade mini`; remove with `uv tool uninstall mini`.
 
+**In a container that also runs tests** (a benchmark task, a CI job): if the machine has no Python 3.12 or newer, uv downloads one for mini, and later `uv run` calls on that machine pick it over the system Python the tests expect. Install mini with its own Python folder, which `uv run` doesn't search, and set the same variable for `uv tool upgrade`:
+
+```bash
+UV_PYTHON_INSTALL_DIR=/opt/mini-python uv tool install git+https://github.com/phuryn/mini-harness
+```
+
 ## Keys
 
 mini reads its keys from environment variables. Only the first is required.
