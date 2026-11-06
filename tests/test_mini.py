@@ -2141,3 +2141,47 @@ for cmd in ("trap 'echo cleaned > cleaned; exit 3' TERM; sleep 60 & wait", "trap
     polite, stubborn = map(int, out.split())
     assert (ws / "cleaned").read_text() == "cleaned\n"  # it got the chance to clean up
     assert gone(polite) and gone(stubborn) and time.monotonic() - start < 10  # and one that ignores SIGTERM is killed
+
+
+STUBBORN = r"""
+import atexit, os, sys
+from mini.tools import Approver, LocalTools
+out = LocalTools(os.getcwd(), Approver(auto=True)).bash(sys.argv[1], timeout=1)
+print(out.split(" as pid ")[1].split(",")[0], flush=True)
+atexit.register(print, "exiting", flush=True)  # runs right before mini's own cleanup: atexit is last in, first out
+if sys.argv[2] != "-":  # the real REPL, so a second signal meets the handlers mini installs
+    from mini import cli
+    sys.argv = ["mini"]
+    cli.main()
+"""
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+@pytest.mark.parametrize("second, command", [
+    ("-", "sh -c \"trap '' TERM; sleep 60\"; echo after"),  # SIGTERM ends the shell; the sh and sleep it ran ignore it
+    ("SIGINT", "trap '' TERM; sleep 60"), ("SIGTERM", "trap '' TERM; sleep 60")])  # all of it ignores SIGTERM
+def test_at_exit_the_whole_group_dies_even_if_its_shell_goes_first_or_the_wait_is_cut_short(ws, tmp_path, second,
+                                                                                               command):
+    import signal
+    import subprocess
+    import time
+    env = {**os.environ, "MINI_HOME": str(tmp_path / "home"), "ANTHROPIC_API_KEY": "x", "PYTHONUNBUFFERED": "1"}
+    p = subprocess.Popen([sys.executable, "-c", STUBBORN, command, second], cwd=ws, env=env, text=True,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    left = int(p.stdout.readline())
+    try:
+        if second != "-":
+            assert "permissions" in p.stdout.readline()
+            p.send_signal(signal.SIGINT)  # leave the REPL with Ctrl-C at its prompt
+        while (line := p.stdout.readline()) and line.strip() != "exiting":
+            pass
+        assert line.strip() == "exiting"  # mini's cleanup starts now, and waits up to a second
+        if second != "-":
+            time.sleep(0.3)
+            p.send_signal(getattr(signal, second))  # a second Ctrl-C, or a kill, in the middle of that wait
+        p.communicate(timeout=20)
+        assert gone(left)  # the shell, and whatever outlived it
+    finally:
+        with contextlib.suppress(OSError):
+            os.killpg(left, signal.SIGKILL)
+

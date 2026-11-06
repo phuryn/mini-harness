@@ -99,15 +99,24 @@ RUNNING = []  # commands left running at their timeout; background jobs aren't h
 @atexit.register
 def stop_running():
     """When mini exits, however it ends (a script's end, sys.exit, Ctrl-C), so does what it left running: SIGTERM
-    first, so a test run or a server can clean up, then SIGKILL for whatever is still there a second later."""
+    first, so a test run or a server can clean up, then SIGKILL for whatever in its group is still there a second
+    later. The group, not the shell: what it started can outlive it, and while any of it lives, the id is still ours."""
     alive = [p for p in RUNNING if p.returncode is None]  # not reaped yet, so the pid can't belong to something else
-    for proc in alive:
-        stop(proc, signal.SIGTERM)
-    end = time.monotonic() + 1
-    while any(p.returncode is None for p in alive) and time.monotonic() < end:  # reap() sets it when one ends
-        time.sleep(0.05)
-    for proc in (p for p in alive if p.returncode is None):
-        stop(proc)
+    try:
+        for proc in alive:
+            stop(proc, signal.SIGTERM)
+        end = time.monotonic() + 1
+        while time.monotonic() < end and any(group_alive(p) for p in alive):
+            time.sleep(0.05)
+    finally:  # a second Ctrl-C or a kill during the wait can't skip this
+        for proc in alive:
+            stop(proc)
+
+
+def group_alive(proc) -> bool:
+    with contextlib.suppress(OSError):  # gone, or only zombies left (macOS says EPERM then)
+        return os.killpg(proc.pid, 0) is None
+    return False
 
 
 def run_shell(command: str, cwd, timeout: int, keep=False) -> tuple[int | None, str]:
