@@ -73,14 +73,14 @@ def spawn(args, cwd, shell=False):
         raise
 
 
-def stop(proc):
-    """Kill its whole process group (tree, on Windows)."""
+def stop(proc, sig=None):
+    """Kill its whole process group (tree, on Windows) with sig, by default SIGKILL."""
     if WINDOWS:  # no process groups; taskkill by full path, since a bare name would search the project first
         subprocess.run([os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), r"System32\taskkill.exe"),
                         "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
     else:
         with contextlib.suppress(OSError):  # already gone (macOS says EPERM when only a zombie is left)
-            os.killpg(proc.pid, signal.SIGKILL)
+            os.killpg(proc.pid, sig or signal.SIGKILL)
 
 
 def reap(proc, log=None):
@@ -89,7 +89,7 @@ def reap(proc, log=None):
         code = proc.wait()
         if log:
             with contextlib.suppress(OSError), log.open("a", encoding="utf-8") as f:
-                f.write(f"[exit {code}]\n")
+                f.write(f"[exit {128 - code if code < 0 else code}]\n")  # killed by signal N: 128+N, as bash says
     threading.Thread(target=wait, daemon=True).start()
 
 
@@ -98,10 +98,16 @@ RUNNING = []  # commands left running at their timeout; background jobs aren't h
 
 @atexit.register
 def stop_running():
-    """When mini exits, however it ends (a script's end, sys.exit, Ctrl-C), so does what it left running."""
-    for proc in RUNNING:
-        if proc.returncode is None:  # not reaped yet, so the pid can't belong to something else by now
-            stop(proc)
+    """When mini exits, however it ends (a script's end, sys.exit, Ctrl-C), so does what it left running: SIGTERM
+    first, so a test run or a server can clean up, then SIGKILL for whatever is still there a second later."""
+    alive = [p for p in RUNNING if p.returncode is None]  # not reaped yet, so the pid can't belong to something else
+    for proc in alive:
+        stop(proc, signal.SIGTERM)
+    end = time.monotonic() + 1
+    while any(p.returncode is None for p in alive) and time.monotonic() < end:  # reap() sets it when one ends
+        time.sleep(0.05)
+    for proc in (p for p in alive if p.returncode is None):
+        stop(proc)
 
 
 def run_shell(command: str, cwd, timeout: int, keep=False) -> tuple[int | None, str]:
@@ -449,7 +455,7 @@ class LocalTools:
 
     def bash(self, command: str, timeout: int = 120, background: bool = False) -> str:
         secret = any(self._secret(p) for p in self._words(command) or [])  # names a secret file: you decide
-        told = any(command.strip() == f"kill -- -{p.pid}" and p.returncode is None for p in RUNNING)  # the stop it was given
+        told = any(command.strip(" \t\n") == f"kill -- -{p.pid}" and p.returncode is None for p in RUNNING)  # its own stop
         if not told and not self.approver.ok("bash", command, self._names_private(command), secret):
             raise ToolError("User denied this command." + self.approver.reason)
         if background:

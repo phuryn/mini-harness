@@ -245,4 +245,4 @@ A full-screen UI, hooks, plugins, a sandbox, checkpoints (use git), forked or pa
 uv run pytest -q
 ```
 
-174 offline tests against a scripted fake client and a real MCP stdio server. They check the invariants above: append-only requests, an answer for every tool call, resume, compaction, interrupts, goal mode, subagent isolation. `AGENTS.md` has the rules for changing the code.
+182 offline tests (178 run on macOS and Linux) against a scripted fake client and a real MCP stdio server. They check the invariants above: append-only requests, an answer for every tool call, resume, compaction, interrupts, goal mode, subagent isolation. `AGENTS.md` has the rules for changing the code.

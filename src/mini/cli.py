@@ -134,7 +134,8 @@ def main():
     p.add_argument("--json", action="store_true", help="headless: print a JSON result line at the end")
     args = p.parse_args()
     for sig in (signal.SIGTERM, signal.SIGHUP) if os.name != "nt" else ():  # a kill or a closed terminal: exit the
-        signal.signal(sig, lambda n, _: sys.exit(128 + n))  # normal way, so atexit stops what bash left running
+        if signal.getsignal(sig) == signal.SIG_DFL:  # normal way, so atexit stops what bash left running; under
+            signal.signal(sig, lambda n, _: sys.exit(128 + n))  # nohup, SIGHUP stays ignored
     if os.name == "nt":  # the classic Windows console shows color codes as text until asked to interpret them
         import ctypes
         k = ctypes.windll.kernel32

@@ -1961,13 +1961,15 @@ def test_a_transient_failure_is_retried_and_leaves_no_trace(ws, monkeypatch):
 @pytest.mark.skipif(os.name == "nt", reason="POSIX: Windows leaves nothing running")
 def test_a_headless_run_may_stop_what_it_left_running_and_nothing_else(ws):
     headless = LocalTools(str(ws), Approver(interactive=False, allow=("sleep",)))  # nobody to approve a kill
-    pid = int(re.search(r"as pid (\d+),", headless.bash("sleep 40", timeout=1))[1])
-    for other in (f"kill -- -{pid + 1}", f"kill -9 -- -{pid}", f"kill -- -{pid}; rm -rf x", f"kill {pid}", "kill -- -1"):
+    out = headless.bash("sleep 40", timeout=1)
+    pid, log = int(re.search(r"as pid (\d+),", out)[1]), Path(re.search(r"goes on in (\S+),", out)[1])
+    for other in (f"kill -- -{pid + 1}", f"kill -9 -- -{pid}", f"kill -- -{pid}; rm -rf x", f"kill {pid}", "kill -- -1",
+                  f"kill -- -{pid}\x0b"):  # padding that bash keeps as part of the word
         with pytest.raises(ToolError, match="denied"):
             headless.bash(other)
     os.killpg(pid, 0)  # none of those ran
     assert headless.bash(f"kill -- -{pid}") == "[no output]"  # the stop it was told, word for word: no approval
-    assert gone(pid)
+    assert gone(pid) and log.read_text().endswith("[exit 143]\n")  # SIGTERM, written as bash writes it: 128 + 15
     with pytest.raises(ToolError, match="denied"):  # once it's gone, the pid isn't its own any more
         headless.bash(f"kill -- -{pid}")
 
@@ -2095,3 +2097,47 @@ def test_with_the_real_sdk_only_a_failure_after_the_stream_starts_gets_retried(w
         assert run(cut, (200, {}, head), (200, {}, whole)) == ("end_turn", 3, "hi")  # an error event, a cut-off, then whole
     finally:
         server.shutdown()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_under_nohup_mini_keeps_running_through_a_hangup(ws, tmp_path):
+    import shutil
+    import signal
+    import subprocess
+    import time
+    env = {**os.environ, "MINI_HOME": str(tmp_path / "home"), "ANTHROPIC_API_KEY": "x", "PYTHONUNBUFFERED": "1"}
+    p = subprocess.Popen([shutil.which("nohup"), sys.executable, "-c", EXIT, "repl"], cwd=ws, env=env, text=True,
+                         stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    left, job = map(int, p.stdout.readline().split())
+    try:
+        assert "permissions" in p.stdout.readline()  # at the prompt
+        p.send_signal(signal.SIGHUP)  # e.g. logging out of the SSH session it was started from
+        time.sleep(1)
+        assert p.poll() is None  # nohup's ignore stands, as in 1.0.2
+        os.killpg(left, 0)  # and what it left running is still there
+        p.send_signal(signal.SIGTERM)  # a kill still ends it the normal way, cleanup included
+        p.communicate(timeout=20)
+        assert p.returncode == 128 + signal.SIGTERM and gone(left)
+    finally:
+        for pid in (left, job):
+            with contextlib.suppress(OSError):
+                os.killpg(pid, signal.SIGKILL)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_at_exit_what_was_left_running_gets_sigterm_first_and_sigkill_if_it_stays(ws, tmp_path):
+    import subprocess
+    import time
+    script = """
+import os
+from mini.tools import Approver, LocalTools
+t = LocalTools(os.getcwd(), Approver(auto=True))
+for cmd in ("trap 'echo cleaned > cleaned; exit 3' TERM; sleep 60 & wait", "trap '' TERM; sleep 60"):
+    print(t.bash(cmd, timeout=1).split(" as pid ")[1].split(",")[0], flush=True)
+"""
+    start = time.monotonic()
+    out = subprocess.run([sys.executable, "-c", script], cwd=ws, env={**os.environ, "MINI_HOME": str(tmp_path / "home")},
+                         capture_output=True, text=True, timeout=30).stdout
+    polite, stubborn = map(int, out.split())
+    assert (ws / "cleaned").read_text() == "cleaned\n"  # it got the chance to clean up
+    assert gone(polite) and gone(stubborn) and time.monotonic() - start < 10  # and one that ignores SIGTERM is killed
