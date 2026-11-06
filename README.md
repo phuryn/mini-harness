@@ -213,6 +213,7 @@ Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.
 | `prices` | Dollars per million tokens: `input`, `output`, `cache_read` (repeated context, about a tenth of input) and `cache_write` (first time context is cached). mini multiplies each request's token counts by these and adds them up, for `--json` and the `--budget` limit. It isn't shown while you work |
 | `prices_over_100k` | Optional higher rates for prompts over 100K tokens (Haiku 5.5 has them) |
 | `window` | Context window in tokens (shown by `/context`) |
+| `max_output` | Most tokens one response may have, thinking included; mini asks for that much. Without it, 64,000 |
 | `compact_at` | Input tokens at which the conversation is summarized; keep it well below `window`. `MINI_COMPACT_AT` overrides it |
 | `search` | Dollars per web search |
 | `efforts` | Effort levels the model accepts |

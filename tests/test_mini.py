@@ -1851,3 +1851,21 @@ def test_on_windows_a_timed_out_command_is_stopped_with_taskkill(ws, monkeypatch
         for pid in pids:
             with contextlib.suppress(ProcessLookupError):
                 os.killpg(pid, signal.SIGKILL)
+
+
+def test_each_model_gets_its_own_output_cap(ws, monkeypatch):
+    sent = {}
+    for model in ("claude-haiku-5-5", "claude-opus-5-5", "claude-some-new-model"):  # the last has no entry: 64,000
+        agent, client, _ = make(ws, [reply(text("hi"))], model=model)
+        agent.turn("hi")
+        sent[model] = client.requests[0]["max_tokens"]
+    assert sent == {"claude-haiku-5-5": 128000, "claude-opus-5-5": 128000, "claude-some-new-model": 64000}
+    agent, client, _ = ds(ws, [reply(text("hi"), model="deepseek-flash")])
+    agent.turn("hi")
+    assert client.requests[0]["max_tokens"] == 64000  # no max_output entry for it
+    monkeypatch.setattr(Agent, "max_tokens", 2000)  # what live tests do to reach the cap
+    agent, client, _ = make(ws, [reply(text("hi")), reply({"type": "compaction", "content": "S.", "signature": "c"},
+                                                          stop="compaction")])
+    agent.turn("hi")
+    agent.compact()
+    assert client.requests[0]["max_tokens"] == 2000 and client.beta.messages.creates[0]["max_tokens"] == 16000

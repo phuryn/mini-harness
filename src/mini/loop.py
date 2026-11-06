@@ -127,7 +127,7 @@ def clean(blocks: list[dict]) -> list[dict]:
 
 
 class Agent:
-    max_tokens = 64000  # per response; live tests lower it to exercise CUT_OFF
+    max_tokens = 0  # per response; 0: the model's max_output in models.json (64,000 without one). Live tests lower it
 
     def __init__(self, cwd, session: Session, ui, approver, hub=None, skills=(), model=None, effort="high", sub=False,
                  client=None):
@@ -215,10 +215,10 @@ class Agent:
 
     # --- model calls ------------------------------------------------------
     def request_args(self, paused=()) -> dict:
-        kw = dict(model=self.model, max_tokens=self.max_tokens, system=[{"type": "text", "text": self.system}],
-                  tools=self.tools, messages=self.messages + list(paused), cache_control={"type": "ephemeral"},
-                  thinking={"type": "adaptive", "display": "summarized",
-                            "block_binding": {"prefix_mismatch_behavior": "drop_block"}},
+        kw = dict(model=self.model, max_tokens=self.max_tokens or self.cfg.get("max_output", 64000),
+                  system=[{"type": "text", "text": self.system}], tools=self.tools, messages=self.messages + list(paused),
+                  cache_control={"type": "ephemeral"}, thinking={"type": "adaptive", "display": "summarized",
+                                                                 "block_binding": {"prefix_mismatch_behavior": "drop_block"}},
                   output_config={"effort": self.effort}, betas=list(BETAS))
         if self.other:  # thinking is on by default there; no thinking binding, betas or fallbacks
             del kw["thinking"], kw["betas"]
