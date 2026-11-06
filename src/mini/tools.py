@@ -57,15 +57,28 @@ def printable(text: str, lines: bool = False) -> str:
                    else c.encode("unicode_escape").decode() for c in text)
 
 
-def run_shell(command: str, cwd, timeout: int):
-    """Run a shell command with no stdin; on timeout or Ctrl-C kill its whole process group (tree, on Windows)."""
-    proc = subprocess.Popen([BASH, "-c", command] if BASH else command, shell=not BASH, cwd=cwd,
-                            stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                            stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace",
-                            env={**os.environ, "PAGER": "cat"}, start_new_session=True)
+def spawn(args, cwd, shell=False):
+    """Start with no stdin, stdout and stderr into a new log under ~/.mini/jobs/. On POSIX it gets its own session
+    (process group), so a Ctrl-C at the terminal doesn't reach it."""
+    log = session.HOME / "jobs" / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(6)}.log"
+    log.parent.mkdir(parents=True, exist_ok=True)
+    with log.open("wb") as out:
+        return subprocess.Popen(args, shell=shell, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
+                                env={**os.environ, "PAGER": "cat"}, start_new_session=True), log
+
+
+def run_shell(command: str, cwd, timeout: int, keep=False) -> tuple[int | None, str]:
+    """Run a shell command and return (exit code, output). The call waits on the shell, not on its output, so a job it
+    leaves running with & doesn't hold it. Ctrl-C kills the whole process group (tree, on Windows), and so does the
+    timeout, unless keep: then the command runs on, like a background job, and the code is None."""
+    proc, log = spawn([BASH, "-c", command] if BASH else command, cwd, shell=not BASH)
     try:
-        out, err = proc.communicate(timeout=timeout)
-    except BaseException:
+        return proc.wait(timeout), log.read_text(encoding="utf-8", errors="replace")
+    except BaseException as e:
+        if keep and isinstance(e, subprocess.TimeoutExpired):  # Git Bash reads /F as a path, //F as /F
+            stop = f"taskkill {'//F //T //PID' if BASH else '/F /T /PID'} {proc.pid}" if WINDOWS else f"kill -- -{proc.pid}"
+            return None, (f"{log.read_text(encoding='utf-8', errors='replace').strip()}\n[still running after {timeout}s, "
+                          f"as pid {proc.pid}; its output continues in {log}. Stop it with {stop}]")
         if WINDOWS:  # no process groups; taskkill by full path, since a bare name would search the project first
             subprocess.run([os.path.join(os.environ.get("SystemRoot", r"C:\Windows"), r"System32\taskkill.exe"),
                             "/F", "/T", "/PID", str(proc.pid)], capture_output=True)
@@ -74,20 +87,18 @@ def run_shell(command: str, cwd, timeout: int):
                 os.killpg(proc.pid, signal.SIGKILL)
         proc.wait()
         raise
-    return proc.returncode, out, err
+    finally:
+        if proc.returncode is not None:  # done or killed; the log stays only for a command left running
+            with contextlib.suppress(OSError):  # Windows: a job left running with & still holds it open
+                log.unlink()
 
 
 def start_job(command: str, cwd) -> str:
     """Detached in its own session, so neither the call's timeout nor Ctrl-C kills it; the log says when it ends."""
     if WINDOWS:
         raise ToolError("background isn't supported on Windows: run it without background, or ask the user to start it.")
-    log = session.HOME / "jobs" / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(6)}.log"
-    log.parent.mkdir(parents=True, exist_ok=True)
-    with log.open("wb") as out:
-        # A subshell, so `exit 3` still logs [exit 3]; `set --` inside, so the command doesn't see itself as $1.
-        proc = subprocess.Popen([BASH or "/bin/sh", "-c", '(eval "set --\n$1"); echo "[exit $?]"', "job", command], cwd=cwd,
-                                stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                env={**os.environ, "PAGER": "cat"}, start_new_session=True)
+    # A subshell, so `exit 3` still logs [exit 3]; `set --` inside, so the command doesn't see itself as $1.
+    proc, log = spawn([BASH or "/bin/sh", "-c", '(eval "set --\n$1"); echo "[exit $?]"', "job", command], cwd)
     return (f"Started in the background: pid {proc.pid}, output in {log} (it ends with [exit N] when the job is done). "
             f"Check it with tail {log} or kill -0 {proc.pid}; stop it with kill -- -{proc.pid}.")
 
@@ -398,12 +409,8 @@ class LocalTools:
             raise ToolError("User denied this command." + self.approver.reason)
         if background:
             return start_job(command, self.cwd)
-        try:
-            code, stdout, stderr = run_shell(command, self.cwd, max(timeout, 1))
-        except subprocess.TimeoutExpired:
-            raise ToolError(f"Timed out after {timeout}s.")
-        out = (stdout + (("\n[stderr]\n" + stderr) if stderr else "")).strip()
-        return f"{out}\n[exit {code}]" if code else (out or "[no output]")
+        code, out = run_shell(command, self.cwd, max(timeout, 1), keep=True)
+        return f"{out.strip()}\n[exit {code}]" if code else (out.strip() or "[no output]")
 
 
 def schema(props: dict, required: list) -> dict:
@@ -437,17 +444,19 @@ SCHEMAS = {
                   "replace_all": {"type": "boolean", "description": "Replace every occurrence (default false)"}},
                  ["path", "old", "new"])},
     "bash": {
-        "description": "Run a shell command in the working directory and get stdout, stderr and the exit code. Use "
-                       "it for git, tests and builds; search files with the find tool instead. There is no terminal: "
-                       "commands get no input, so interactive programs end at once. Output over 30,000 characters is cut in the "
-                       "middle. The call waits while anything holds the command's output open, so a job left running "
-                       "with & keeps it waiting, and a timeout kills the job with its whole process group. For servers, "
-                       "long builds and other long jobs, set background: the command starts detached, writes to a log "
-                       "file, and the call returns at once with the pid and the log's path. Commands other than plain reads "
-                       "(ls, cat or head of project files, read-only git; no pipes or redirects) go through approval.",
+        "description": "Run a shell command in the working directory and get its output (stdout and stderr together) "
+                       "and the exit code. Use it for git, tests and builds; search files with the find tool instead. "
+                       "There is no terminal: commands get no input, so interactive programs end at once. Output over "
+                       "30,000 characters is cut in the middle. A command still running at the timeout isn't killed: "
+                       "it goes on in the background, and you get its output so far, its pid and the log file where "
+                       "its output continues. For servers, long builds and other long jobs, set background: the command "
+                       "starts detached, writes to a log file, and the call returns at once with the pid and the log's "
+                       "path. Commands other than plain reads (ls, cat or head of project files, read-only git; no pipes "
+                       "or redirects) go through approval.",
         **schema({"command": {"type": "string"},
-                  "timeout": {"type": "integer", "description": "Seconds before the command is killed (default 120)"},
-                  "background": {"type": "boolean", "description": "Start it detached and return at once (default false)"}},
+                  "timeout": {"type": "integer", "description": "Seconds before it goes on in the background (default 120)"},
+                  "background": {"type": "boolean", "description": "Start it detached and return at once (default false). "
+                                 "It runs detached already, so don't add & or nohup"}},
                  ["command"])},
     "find": {
         "description": "Find files by name, or lines by content (path:line: text), in a folder or one file. Read-only; "

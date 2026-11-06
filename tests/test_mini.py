@@ -1,3 +1,4 @@
+import contextlib
 import json
 import os
 import re
@@ -494,10 +495,26 @@ def test_failed_subagent_is_an_error_result(ws):
     assert client.requests[-1]["messages"][-1]["content"][0]["is_error"] is True
 
 
-def test_bash_timeout_kills_the_process_group(ws):
-    tools = LocalTools(str(ws), Approver(auto=True))
-    with pytest.raises(ToolError, match="Timed out"):
-        tools.bash("sleep 30 & sleep 30", timeout=1)
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups; the Windows branch has its own test")
+def test_a_command_still_running_at_the_timeout_goes_on_in_the_background(ws, tmp_path):
+    import signal
+    import time
+    tools, start = LocalTools(str(ws), Approver(auto=True)), time.monotonic()
+    out = tools.bash("echo started; sleep 2; echo finished; touch done", timeout=1)
+    m = re.fullmatch(r"started\n\[still running after 1s, as pid (\d+); its output continues in (\S+)\. "
+                     r"Stop it with kill -- -(\d+)\]", out)
+    assert m and m[1] == m[3] and time.monotonic() - start < 1.8, out
+    pid, log = int(m[1]), Path(m[2])
+    try:
+        assert os.getsid(pid) == pid and list((tmp_path / "home" / "jobs").iterdir()) == [log]  # its own group; one log
+        end = time.monotonic() + 10
+        while not (ws / "done").exists() and time.monotonic() < end:  # not killed: it ends on its own
+            time.sleep(0.05)
+        assert (ws / "done").exists() and log.read_text() == "started\nfinished\n"
+        assert "finished" in LocalTools(str(ws), Approver(interactive=False)).bash(f"tail {log}")  # job logs read freely
+    finally:
+        with contextlib.suppress(ProcessLookupError):
+            os.killpg(pid, signal.SIGKILL)
 
 
 # --- review round 3 regressions -----------------------------------------------
@@ -1557,7 +1574,8 @@ def test_the_system_prompt_says_who_approves_and_the_tools_never_claim_it(ws):
         assert "ask the user" not in words and "can be denied" not in words and "may say no" not in words
         assert words.count("goes through approval") + words.count("go through approval") == 4  # read, write, bash, find
     bash = next(t for t in yes.tools if t["name"] == "bash")["description"]
-    assert "with & keeps it waiting" in bash and "process group" in bash and "background" in bash
+    assert "isn't killed: it goes on in the background" in bash and "&" not in bash
+    assert "don't add & or nohup" in json.dumps(next(t for t in yes.tools if t["name"] == "bash")["input_schema"])
 
 
 def test_a_permissions_change_is_a_note_and_resume_tells_the_latest(ws):
@@ -1737,3 +1755,99 @@ def test_headless_goal_exit_code_says_whether_it_was_done(ws, monkeypatch):
     with pytest.raises(SystemExit) as stopped:
         cli.main()
     assert stopped.value.code == 1
+
+
+# --- 1.0.3: a timed-out command goes on, output cap per model, cut-offs in a row, retries ---------------------------
+
+def gone(pgid, within=5.0) -> bool:
+    """Has every process in the group ended (orphans are reaped by init, so give it a moment)?"""
+    import time
+    end = time.monotonic() + within
+    while time.monotonic() < end:
+        try:
+            os.killpg(pgid, 0)
+        except ProcessLookupError:
+            return True
+        time.sleep(0.05)
+    return False
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_a_timed_out_command_s_output_is_still_cut_to_the_cap_keeping_the_note(ws):
+    import signal
+    t = tool("bash", {"command": "head -c 40000 /dev/zero | tr '\\0' x; sleep 30", "timeout": 1})
+    agent, client, _ = make(ws, [reply(t, stop="tool_use"), reply(text("ok"))])
+    agent.turn("go")
+    out = client.requests[1]["messages"][-1]["content"][0]["content"]
+    pid = int(re.search(r"as pid (\d+);", out)[1])
+    os.killpg(pid, signal.SIGKILL)
+    assert len(out) < 30_100 and "characters cut" in out and out.endswith(f"Stop it with kill -- -{pid}]")
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX")
+def test_a_job_left_running_with_and_does_not_hold_the_call(ws, tmp_path):
+    import signal
+    import time
+    start = time.monotonic()
+    out = LocalTools(str(ws), Approver(auto=True)).bash("sleep 30 & echo $! > child; echo hi; echo oops >&2", timeout=20)
+    assert out == "hi\noops" and time.monotonic() - start < 5  # 1.0.2 waited out the timeout, then killed it
+    child = int((ws / "child").read_text())
+    try:
+        os.kill(child, 0)  # still running: & does what it says
+        assert not list((tmp_path / "home" / "jobs").iterdir())  # the command ended, so no log is kept
+    finally:
+        os.kill(child, signal.SIGKILL)
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_ctrl_c_during_bash_still_kills_the_whole_tree(ws, tmp_path, monkeypatch):
+    import subprocess
+    import time
+    real = subprocess.Popen.wait
+
+    def wait(self, timeout=None):  # Ctrl-C half a second into the call's wait; the harness's own wait runs for real
+        if timeout:
+            time.sleep(0.5)
+            raise KeyboardInterrupt
+        return real(self)
+    monkeypatch.setattr(subprocess.Popen, "wait", wait)
+    with pytest.raises(KeyboardInterrupt):
+        LocalTools(str(ws), Approver(auto=True)).bash("echo $$ > shell; sleep 30 & sleep 30", timeout=60)
+    assert gone(int((ws / "shell").read_text()))  # the shell, its & job and its foreground child
+    assert not list((tmp_path / "home" / "jobs").iterdir())
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process groups")
+def test_the_goal_verify_command_is_still_killed_at_its_timeout(ws, monkeypatch):
+    import mini.loop as ml
+    real, kept = ml.run_shell, []
+    monkeypatch.setattr(ml, "run_shell", lambda cmd, cwd, timeout, **kw: kept.append(kw) or real(cmd, cwd, 1, **kw))
+    agent, _, _ = make(ws, [])
+    agent.goal, agent.goal_claim = {"objective": "x", "verify": "echo $$ > shell; sleep 30 & sleep 30"}, "done"
+    ok, why = agent.verify()
+    assert not ok and "timed out" in why and kept == [{}]  # no keep: a verdict needs the command to end
+    assert gone(int((ws / "shell").read_text()))
+
+
+@pytest.mark.skipif(os.name == "nt", reason="pretends to be Windows on POSIX, to reach that branch here")
+def test_on_windows_a_timed_out_command_is_stopped_with_taskkill(ws, monkeypatch):
+    import signal
+    import subprocess
+    import mini.tools as mt
+    monkeypatch.setattr(mt, "WINDOWS", True)
+    tools, pids = LocalTools(str(ws), Approver(auto=True)), []
+    try:
+        for bash, flags in ((mt.BASH, "//F //T //PID"), (None, "/F /T /PID")):  # Git Bash, then cmd.exe
+            monkeypatch.setattr(mt, "BASH", bash)
+            out = tools.bash("sleep 30", timeout=1)
+            pids.append(int(re.search(r"as pid (\d+);", out)[1]))
+            assert out.endswith(f"Stop it with taskkill {flags} {pids[-1]}]")
+        killed = []  # Ctrl-C and the verify timeout run taskkill on the tree, by its full path
+        monkeypatch.setattr(subprocess, "run", lambda a, **k: killed.append(a) or os.killpg(int(a[-1]), signal.SIGKILL))
+        with pytest.raises(subprocess.TimeoutExpired):
+            mt.run_shell("sleep 30", str(ws), 1)
+        assert killed[0][0].endswith(r"System32\taskkill.exe") and killed[0][1:4] == ["/F", "/T", "/PID"]
+    finally:
+        for pid in pids:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(pid, signal.SIGKILL)

@@ -562,11 +562,11 @@ class Agent:
         if cmd:
             self.ui.note(f"verifying: {cmd}")
             try:
-                code, out, err = run_shell(cmd, self.cwd, 600)
+                code, out = run_shell(cmd, self.cwd, 600)  # killed at the timeout: a verdict needs the command to end
             except subprocess.TimeoutExpired:
                 return False, f"`{cmd}` timed out after 600s."
             if code:
-                return False, f"The harness ran `{cmd}` and it failed:\n{(out + err)[-4000:]}"
+                return False, f"The harness ran `{cmd}` and it failed:\n{out[-4000:]}"
         self.ui.note("a fresh reviewer is checking the goal")
         review = self.run_subagent(REVIEW.format(objective=self.goal["objective"], claim=self.goal_claim[:4000], verified=(
             f" The harness already ran `{cmd}` and it passed." if cmd else "")))
