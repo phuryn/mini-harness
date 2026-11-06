@@ -1902,7 +1902,7 @@ def test_a_transient_failure_is_retried_and_leaves_no_trace(ws, monkeypatch):
     paused = reply(text("searching"), {"type": "server_tool_use", "id": "srvtoolu_1", "name": "web_search",
                                        "input": {"query": "x"}}, stop="pause_turn")
     script = [paused, Broken(reply(text("half an ans")), overloaded), Broken(reply(text("half"))),  # error, then cut off
-              httpx2.ReadError("peer closed connection"), reply(text("whole"))]
+              Broken(reply(text("hal")), httpx2.ReadError("peer closed connection")), reply(text("whole"))]
     agent, client, ui = make(ws, script)
     agent.pending_system.append("note")
     assert agent.turn("hi") == "end_turn" and agent.final_text() == "whole"
@@ -1913,14 +1913,16 @@ def test_a_transient_failure_is_retried_and_leaves_no_trace(ws, monkeypatch):
     assert_append_only(client.requests)
 
     waits.clear()  # three retries, then the turn ends as before
-    agent, client, _ = make(ws, [api_error(anthropic.InternalServerError, 500, "api_error")] * 4)
+    agent, client, _ = make(ws, [Broken(reply(text("x")), api_error(anthropic.InternalServerError, 500, "api_error"))] * 4)
     assert agent.turn("hi") == "error" and len(client.requests) == 4 and waits == [2, 4, 8]
     assert [m["role"] for m in agent.messages] == ["user", "assistant"]  # the placeholder
 
-    waits.clear()  # a request the API refused is never retried
-    for e in (api_error(anthropic.BadRequestError, 400, "invalid_request_error"),
-              api_error(anthropic.AuthenticationError, 401, "authentication_error"),
-              api_error(anthropic.APIStatusError, 200, "invalid_request_error"), RuntimeError("529")):
+    waits.clear()  # never: a failure before the stream starts (the SDK retried it already) or a request the API refused
+    for e in (api_error(anthropic.RateLimitError, 429, "rate_limit_error"), anthropic.APIConnectionError(request=None),
+              api_error(anthropic.OverloadedError, 529, "overloaded_error"),
+              Broken(reply(text("x")), api_error(anthropic.BadRequestError, 400, "invalid_request_error")),
+              Broken(reply(text("x")), api_error(anthropic.APIStatusError, 200, "invalid_request_error")),
+              Broken(reply(text("x")), RuntimeError("529"))):
         agent, client, _ = make(ws, [e, reply(text("never"))])
         assert agent.turn("hi") == "error" and len(client.requests) == 1
     assert waits == []
@@ -1928,12 +1930,20 @@ def test_a_transient_failure_is_retried_and_leaves_no_trace(ws, monkeypatch):
     assert all(ml.transient(e) for e in (api_error(anthropic.RateLimitError, 429, "rate_limit_error"),
                                           api_error(anthropic.OverloadedError, 529, "overloaded_error"),
                                           anthropic.APIConnectionError(request=req), anthropic.APITimeoutError(req)))
-    assert not ml.transient(api_error(anthropic.RequestTooLargeError, 413, "request_too_large"))
+    assert not any(ml.transient(e) for e in (api_error(anthropic.RequestTooLargeError, 413, "request_too_large"),
+                                              BrokenPipeError(), ConnectionResetError()))  # OS errors are our own
+
+    class ClosedStdout(QuietUI):  # what `mini -p ... | head -1` hits once head has its line
+        def text(self, s):
+            raise BrokenPipeError(32, "Broken pipe")
+    client = FakeClient([reply(text("hi")), reply(text("again"))])
+    agent = Agent(str(ws), Session.create(str(ws)), ClosedStdout(), Approver(auto=True), client=client)
+    assert agent.turn("hi") == "error" and len(client.requests) == 1 and waits == []  # one billed request, not four
 
     def ctrl_c(_):
         raise KeyboardInterrupt
     monkeypatch.setattr(ml.time, "sleep", ctrl_c)  # Ctrl-C while it waits to retry
-    agent, client, _ = make(ws, [overloaded, reply(text("never"))])
+    agent, client, _ = make(ws, [Broken(reply(text("x")), overloaded), reply(text("never"))])
     assert agent.turn("hi") == "interrupted" and len(client.requests) == 1
     assert [m["role"] for m in agent.messages] == ["user", "assistant"]
 
@@ -2019,3 +2029,60 @@ def test_a_command_that_cannot_start_leaves_no_log(ws, tmp_path):
     with pytest.raises(OSError):
         tools.bash("echo hi")
     assert not list((tmp_path / "home" / "jobs").iterdir())
+
+
+def test_a_models_json_entry_changes_only_the_fields_it_names(tmp_path):
+    import subprocess
+    (tmp_path / "models.json").write_text(json.dumps({"models": {"claude-haiku-5-5": {"prices": {
+        "input": 9, "output": 9, "cache_read": 9, "cache_write": 9}}}}))
+    show = "from mini.loop import model_config as m; c = m('claude-haiku-5-5'); print(c['max_output'], c['prices']['input'])"
+    out = subprocess.run([sys.executable, "-c", show], env={**os.environ, "MINI_HOME": str(tmp_path)},
+                         capture_output=True, text=True, check=True).stdout.split()
+    assert out == ["128000", "9"]  # the README's own override example no longer drops the output cap
+
+
+def test_with_the_real_sdk_only_a_failure_after_the_stream_starts_gets_retried(ws, monkeypatch):
+    import http.server
+    import threading
+    import anthropic
+    import mini.loop as ml
+    monkeypatch.setattr(ml.time, "sleep", lambda s: None)
+    ev = lambda kind, data: f"event: {kind}\ndata: {json.dumps({'type': kind, **data})}\n\n"
+    head = (ev("message_start", {"message": {"id": "m", "type": "message", "role": "assistant", "model": "claude-haiku-5-5",
+                                             "content": [], "stop_reason": None, "stop_sequence": None,
+                                             "usage": {"input_tokens": 1, "output_tokens": 1}}})
+            + ev("content_block_start", {"index": 0, "content_block": {"type": "text", "text": ""}})
+            + ev("content_block_delta", {"index": 0, "delta": {"type": "text_delta", "text": "hi"}}))
+    whole = head + ev("content_block_stop", {"index": 0}) + ev("message_delta", {
+        "delta": {"stop_reason": "end_turn", "stop_sequence": None}, "usage": {"output_tokens": 2}})  # no message_stop
+    error = lambda kind: json.dumps({"type": "error", "error": {"type": kind, "message": kind}})
+    answers, seen = [], []
+
+    class API(http.server.BaseHTTPRequestHandler):
+        def do_POST(self):
+            self.rfile.read(int(self.headers["Content-Length"]))
+            seen.append(1)
+            status, headers, body = answers.pop(0)
+            self.send_response(status)
+            for k, v in {"Content-Type": "text/event-stream" if status == 200 else "application/json", **headers}.items():
+                self.send_header(k, v)
+            self.end_headers()
+            self.wfile.write(body.encode())
+
+        def log_message(self, *a):
+            pass
+    server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), API)
+    threading.Thread(target=server.serve_forever, daemon=True).start()
+    client = anthropic.Anthropic(api_key="x", base_url=f"http://127.0.0.1:{server.server_port}")  # the SDK's 2 retries
+
+    def run(*replies):
+        answers[:], seen[:] = list(replies), []
+        agent = Agent(str(ws), Session.create(str(ws)), QuietUI(), Approver(auto=True), client=client, model="claude-haiku-5-5")
+        return agent.turn("hi"), len(seen), agent.final_text()
+    try:
+        cap = (429, {"x-should-retry": "false"}, error("rate_limit_error"))  # e.g. a spend limit: the API says don't retry
+        assert run(cap)[:2] == ("error", 1)  # 1.0.3 before review: 12 requests
+        cut = (200, {}, head + ev("error", {"error": {"type": "overloaded_error", "message": "Overloaded"}}))
+        assert run(cut, (200, {}, head), (200, {}, whole)) == ("end_turn", 3, "hi")  # an error event, a cut-off, then whole
+    finally:
+        server.shutdown()

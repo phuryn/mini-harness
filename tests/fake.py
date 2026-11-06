@@ -38,12 +38,15 @@ def tool(name, inp, tid=None):
 
 
 class Broken:
-    """A stream that shows the reply's text, then raises `error`, or with no error just stops before message_stop."""
+    """A stream that shows the reply's text, then raises `error` mid-stream, or with no error stops before the end
+    (no stop reason). A plain reply's stream, like some providers', sends no message_stop."""
     def __init__(self, msg, error=None):
         self.msg, self.error = msg, error
 
 
 class _Stream:
+    response = SimpleNamespace(request=None)  # what an SDK error needs
+
     def __init__(self, msg, error=None, whole=True):
         self.msg, self.error, self.whole = msg, error, whole
 
@@ -54,16 +57,15 @@ class _Stream:
         return False
 
     def __iter__(self):
+        yield SimpleNamespace(type="message_start")
         for b in self.msg.content:
             if b.type == "text":
                 yield SimpleNamespace(type="content_block_delta", delta=SimpleNamespace(type="text_delta", text=b.text))
         if self.error:
             raise self.error
-        if self.whole:
-            yield SimpleNamespace(type="message_stop")
 
     def get_final_message(self):
-        return self.msg
+        return self.msg if self.whole else self.msg.model_copy(update={"stop_reason": None})
 
 
 class _Messages:

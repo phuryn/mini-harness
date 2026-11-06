@@ -30,7 +30,8 @@ from .tools import CONTROL, SCHEMAS, WEB_SEARCH, LocalTools, ToolError, approval
 CONFIG = json.loads(Path(__file__).with_name("models.json").read_text(encoding="utf-8"))
 if (HOME / "models.json").exists():
     mine = json.loads((HOME / "models.json").read_text(encoding="utf-8"))
-    CONFIG = {**CONFIG, **mine, "models": {**CONFIG["models"], **mine.get("models", {})}}
+    merged = {m: {**CONFIG["models"].get(m, {}), **c} for m, c in mine.get("models", {}).items()}  # per field, per model
+    CONFIG = {**CONFIG, **mine, "models": {**CONFIG["models"], **merged}}
 MODELS = CONFIG["models"]
 OTHER = {m: c for m, c in MODELS.items() if "base_url" in c}
 MAIN_MODEL = os.environ.get("MINI_MODEL", CONFIG["main"])
@@ -118,13 +119,13 @@ def n(x) -> int:
 
 
 def transient(e) -> bool:
-    """Worth another try: overloaded, rate-limited, a server error, a broken connection or stream; never a request the
-    API refused (validation, auth). The SDK retries these only before a stream starts. Mid-stream, an error event comes
-    with HTTP 200 and its type, and a dropped connection raises the HTTP library's own error."""
+    """Worth another try mid-stream: overloaded, rate-limited, a server error, a broken connection or stream; never a
+    request the API refused (validation, auth), nor our own failure (a closed stdout is an OSError). Mid-stream, an
+    error event comes with HTTP 200 and its type, and a dropped connection raises the HTTP library's own error."""
     if isinstance(e, anthropic.APIStatusError):
         return e.status_code == 429 or e.status_code >= 500 or e.type in ("overloaded_error", "rate_limit_error",
                                                                             "api_error", "timeout_error")
-    return isinstance(e, (anthropic.APIConnectionError, ConnectionError)) or type(e).__module__.startswith("httpx")
+    return isinstance(e, anthropic.APIConnectionError) or type(e).__module__.startswith("httpx")
 
 
 def clean(blocks: list[dict]) -> list[dict]:
@@ -239,23 +240,27 @@ class Agent:
         return kw
 
     def call(self, paused=()):
-        """Stream one response. A transient failure gets three more tries, 2, 4 and 8 s apart. A failed attempt leaves
-        no trace in the transcript: turn() appends only a response that came back whole."""
+        """Stream one response. A transient failure mid-stream gets three more tries, 2, 4 and 8 s apart; before the
+        stream starts, the SDK's own retries apply, so they aren't stacked. A failed attempt leaves no trace in the
+        transcript: turn() appends only a response that came back whole."""
         for wait in (2, 4, 8, 0):
+            started = False
             try:
                 with self.client.beta.messages.stream(**self.request_args(paused)) as stream:
-                    ev = None
+                    started, ev = True, None  # the request went through
                     for ev in stream:
                         if ev.type == "content_block_delta":
                             if ev.delta.type == "text_delta":
                                 self.ui.text(ev.delta.text)
                             elif ev.delta.type == "thinking_delta":
                                 self.ui.thinking(ev.delta.thinking)
-                    if getattr(ev, "type", None) != "message_stop":  # a stream cut off cleanly raises nothing
-                        raise ConnectionError("the stream ended before the response was complete")
-                    return stream.get_final_message()
+                    resp = stream.get_final_message() if ev else None  # no stop reason: cut off, which raises nothing
+                    if not (resp and resp.stop_reason):
+                        raise anthropic.APIConnectionError(message="the stream ended before the response was complete",
+                                                           request=stream.response.request)
+                    return resp
             except Exception as e:
-                if not wait or not transient(e):
+                if not (wait and started and transient(e)):
                     raise
                 self.ui.end_message()
                 self.ui.warn(f"request failed ({e}); retrying in {wait}s")
