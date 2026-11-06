@@ -54,7 +54,7 @@ As of November 2026. Pi is built to be extended; mini is built to be read.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-dark.png">
-  <img src="docs/img/terminal-bench-light.png" alt="Terminal-Bench 2.0, Claude Haiku 5.5 at high effort, mean tasks passed of 10 over five runs, with agent minutes and cost per run: Mini Harness 9.2 (31 min, $0.11), Pi 8.8 (35 min, $0.09), mini-swe-agent 8.8 (38 min, $0.19), Hermes Agent 8.4 (44 min, ~$0.10), Claude Code 8.4 (33 min, $0.19), OpenCode 8.2 (36 min, $0.11), Terminus 2 8.0 (51 min, $0.12), Kilo Code 7.6 (39 min, $0.13).">
+  <img src="docs/img/terminal-bench-light.png" alt="Terminal-Bench 2.0, Claude Haiku 5.5 at high effort, mean tasks passed of 10 over five runs, with agent minutes and cost per run: Mini Harness 9.2 (31 min, $0.11), Pi 8.8 (35 min, $0.09), mini-swe-agent 8.8 (38 min, $0.19), Hermes Agent 8.4 (44 min, ~$0.10), Claude Code 8.4 (33 min, $0.19), OpenCode 8.2 (36 min, $0.11), Terminus 2 8.0 (51 min, $0.13), Kilo Code 7.6 (39 min, $0.13).">
 </picture>
 
 <picture>
