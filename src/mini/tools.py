@@ -90,8 +90,8 @@ def reap(proc, log=None):
     """Wait for it in a thread, so it doesn't linger as a zombie that kill -0 still finds; then end its log with [exit N]."""
     def wait():
         code = proc.wait()
-        if code < 0:  # its shell was killed (a plain kill PID): what it started goes too, as when bash exec'd the command
-            stop(proc, signal.SIGTERM)
+        if code < 0 and not getattr(proc, "stopping", False):  # its shell was killed (kill PID): what it started goes
+            stop(proc, signal.SIGKILL if code == -signal.SIGKILL else signal.SIGTERM)  # too, as when bash exec'd it
         if log:
             with contextlib.suppress(OSError), log.open("a", encoding="utf-8") as f:
                 f.write(f"[exit {128 - code if code < 0 else code}]\n")  # killed by signal N: 128+N, as bash says
@@ -111,6 +111,7 @@ def stop_running():
     alive = [p for p in RUNNING if p.returncode is None]  # not reaped yet, so the pid can't belong to something else
     try:
         for proc in alive:
+            proc.stopping = True  # one SIGTERM: the reaper doesn't send a second when the shell dies
             stop(proc, signal.SIGTERM)
         end = time.monotonic() + 1
         while time.monotonic() < end and any(group_alive(p) for p in alive):
@@ -489,6 +490,8 @@ class LocalTools:
     def bash(self, command: str, timeout: int = 120, background: bool = False) -> str:
         secret = any(self._secret(p) for p in self._words(command) or [])  # names a secret file: you decide
         told = any(command.strip(" \t\n") == f"kill -- -{p.pid}" and p.returncode is None for p in RUNNING)  # its own stop
+        for p in RUNNING if told else []:
+            p.stopping = getattr(p, "stopping", False) or command.strip(" \t\n") == f"kill -- -{p.pid}"  # this one signal
         if not told and not self.approver.ok("bash", command, self._names_private(command), secret):
             raise ToolError("User denied this command." + self.approver.reason)
         earlier = RUNNING + JOBS

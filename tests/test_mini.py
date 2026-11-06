@@ -1787,6 +1787,8 @@ def gone(pgid, within=5.0) -> bool:
             os.killpg(pgid, 0)
         except ProcessLookupError:
             return True
+        except PermissionError:  # macOS, when only a zombie is left: not gone until it's reaped, so keep waiting
+            pass
         time.sleep(0.05)
     return False
 
@@ -2282,6 +2284,22 @@ def test_every_bash_result_lists_what_earlier_calls_left_running_and_says_when_i
     assert wait_until(lambda: mt.JOBS[0].poll() is not None)
     assert re.fullmatch(rf"hi\n\[ended since the last call: pid {pids[1]}, log \S+\.log\]", t.bash("echo hi"))
     assert t.bash("echo hi") == "hi"  # said once
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_kill_9_of_a_jobs_shell_takes_what_ignores_sigterm_with_it(ws):
+    import signal
+    import mini.tools as mt
+    t = LocalTools(str(ws), Approver(auto=True))
+    out = t.bash(f"{sys.executable} -c 'import signal, time; signal.signal(signal.SIGTERM, signal.SIG_IGN); time.sleep(30)'",
+                 timeout=1)
+    pid = int(re.search(r"as pid (\d+),", out)[1])
+    try:
+        os.kill(pid, signal.SIGKILL)  # the shell only: the python it started ignores SIGTERM, so it needs the same -9
+        assert wait_until(lambda: mt.RUNNING[0].poll() is not None and not mt.group_alive(mt.RUNNING[0]))
+    finally:
+        with contextlib.suppress(OSError):
+            os.killpg(pid, signal.SIGKILL)
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX: nothing is left running on Windows")
