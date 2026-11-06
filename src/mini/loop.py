@@ -65,7 +65,7 @@ REVIEW = ("An agent says it met the goal below. Check whether it really did, in 
           "{claim}\n\nSay NOT DONE only for a concrete gap you found, not for something you couldn't check; name what you "
           "couldn't check. End with a last line that is exactly VERDICT: DONE or VERDICT: NOT DONE.")
 
-# After a reply that hit the output cap: say which case it was, then let it go on (twice per turn).
+# After a reply that hit the output cap: say which case it was, then let it go on (twice in a row).
 CUT_OFF = {"thinking": "Your last response hit the output limit while you were still thinking, before it produced "
                        "any text or tool call. Don't start over: from where your reasoning got to, think much more "
                        "briefly and produce your answer or next tool call well within the limit.",
@@ -333,7 +333,8 @@ class Agent:
             paused = []
             self.ui.end_message()
             uses = [b for b in blocks if b["type"] == "tool_use"]
-            cut = resp.stop_reason == "max_tokens" and cut_offs < 2
+            cut_offs = cut_offs + 1 if resp.stop_reason == "max_tokens" else 0  # in a row: any other reply resets it
+            cut = 0 < cut_offs <= 2
             if uses:
                 results, interrupted = self.run_tools(uses, resp.stop_reason)
                 self.add_user(results + ([{"type": "text", "text": CUT_OFF["tool"]}] if cut else []))
@@ -345,7 +346,6 @@ class Agent:
                     continue
             if resp.stop_reason == "max_tokens":  # the reply is kept as returned; a note says what happened
                 if cut:
-                    cut_offs += 1
                     self.ui.note("the reply hit the output limit; asking the model to go on")
                     if not uses:  # with a call, the note went in with its result
                         self.add_user(CUT_OFF["text" if any(b["type"] == "text" and b["text"].strip() for b in blocks)

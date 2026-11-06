@@ -1869,3 +1869,12 @@ def test_each_model_gets_its_own_output_cap(ws, monkeypatch):
     agent.turn("hi")
     agent.compact()
     assert client.requests[0]["max_tokens"] == 2000 and client.beta.messages.creates[0]["max_tokens"] == 16000
+
+
+def test_output_cap_cut_offs_count_in_a_row_not_per_turn(ws):
+    script = [reply(thinking(), stop="max_tokens"), reply(tool("bash", {"command": "echo a"}), stop="tool_use"),
+              reply(thinking(), stop="max_tokens"), reply(tool("bash", {"command": "echo b"}), stop="tool_use"),
+              reply(thinking(), stop="max_tokens"), reply(text("done"))]
+    agent, client, _ = make(ws, script)
+    assert agent.turn("long job") == "end_turn" and len(client.requests) == 6  # 1.0.2 stopped at the third, apart
+    assert_append_only(client.requests)
