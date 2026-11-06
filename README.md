@@ -3,7 +3,7 @@
 
 # mini
 
-An agent harness built for teaching: about 1,300 lines of Python and two dependencies, small enough to read in one sitting.
+An agent harness built for teaching: about 1,400 lines of Python and two dependencies, small enough to read in one sitting.
 
 Other minimal harnesses exist, but none has goal mode, permissions, skills and MCP servers. I wanted a fully working one to explain how a harness is built, down to Anthropic's server-side compaction. That's why it runs on Claude and on other models that speak Anthropic's message format.
 
@@ -31,7 +31,7 @@ As of November 2026. Pi is built to be extended; mini is built to be read.
 
 | | **Mini Harness** | mini-swe-agent | nanocode | Pi | Codex CLI | Claude Code |
 |---|---|---|---|---|---|---|
-| Code | ~1,300 lines (Python) | ~4,000 lines (Python) | ~220 lines (one Python file) | ~115K lines (TypeScript; loop alone ~1,800) | ~1.4M lines (Rust) |  |
+| Code | ~1,400 lines (Python) | ~4,000 lines (Python) | ~220 lines (one Python file) | ~115K lines (TypeScript; loop alone ~1,800) | ~1.4M lines (Rust) |  |
 | Dependencies | 2 (anthropic, mcp) | 14 (litellm, pydantic, textual...) | 0 (standard library) | 22 (5 are its own packages) | 77 (52 are its own crates) |  |
 | Tools | 5 + web search (+ subagent, ask user, goal done) | bash only | 6 | 4 (+6 optional) | many | many |
 | Sessions | yes | no | no | yes, branching | yes, branching | yes, branching |
@@ -188,7 +188,7 @@ Hosted servers with OAuth go through `mcp-remote`, which runs the login in your 
 
 ## Models and prices
 
-Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.json): which model is the default, which ones subagents use, and each model's prices, context window and compaction threshold. No model name is written in the code. To change or add something without touching the repo, put the same shape in `~/.mini/models.json`; its entries override or extend the shipped ones.
+Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.json): which model is the default, which ones subagents use, and each model's prices, context window and compaction threshold. No model name is written in the code. To change or add something without touching the repo, put the same shape in `~/.mini/models.json`; its entries override or extend the shipped ones, field by field.
 
 ```json
 {
@@ -230,7 +230,7 @@ Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.
 - **Append-only transcript.** The system prompt and tool list are frozen at session start; nothing already sent is ever edited. Current Claude models bind thinking blocks to everything before them, so an edit would break the conversation. Later instructions are appended as system messages.
 - **Sessions.** One JSONL file per conversation under `~/.mini/sessions/<project>/`. Resuming means reading it back; a crash mid-tool is repaired on resume, by appending.
 - **Every tool call gets an answer**, including failures, denials and interrupts, so the transcript stays valid.
-- **Tools.** `read` (text, or a PNG, JPEG, GIF or WebP image the model sees, up to 3000 px a side and 20 MB of images per conversation), `write`, `edit`, `bash` (with `background` for servers and long builds: detached, output in a log under `~/.mini/jobs/`; a command still running at its timeout goes on the same way), `find`, plus `web_search` (direct searches only, without Anthropic's code sandbox), `task` (a subagent with a fresh context that returns only its answer), `ask_user` (a question, optionally with numbered options; left out of headless runs) and `goal_done`. Errors tell the model what to do next. If a reply hits the output limit, mini tells the model and lets it continue, twice in a row; a goal pauses after that.
+- **Tools.** `read` (text, or a PNG, JPEG, GIF or WebP image the model sees, up to 3000 px a side and 20 MB of images per conversation), `write`, `edit`, `bash` (with `background` for servers and long builds: detached, output in a log under `~/.mini/jobs/`; on macOS and Linux, a command still running at its timeout goes on the same way until it ends or mini exits), `find`, plus `web_search` (direct searches only, without Anthropic's code sandbox), `task` (a subagent with a fresh context that returns only its answer), `ask_user` (a question, optionally with numbered options; left out of headless runs) and `goal_done`. Errors tell the model what to do next. If a reply hits the output limit, mini tells the model and lets it continue, twice in a row; a goal pauses after that.
 - **Permissions.** Reads, searches and edits inside the project run freely. Reading outside the project, or any file that may hold secrets (`.env`, keys, `~/.ssh`, `~/.aws`, credentials files), needs approval, because whatever the model reads goes to the API and into the session file. In judge mode Jev can approve reads outside the project, but secrets and writes to files that run later always ask you. Searches never look inside those files, and `cat`/`head` lose their free pass on such paths. Read-only git (`status`, `diff`, `log`, `show`) runs without asking. Other bash commands, MCP calls, writes outside the project and writes to files that run later (`.git/`, `Makefile`, `package.json`...) ask first, or go to [Jev](https://www.productcompass.pm/p/jev-decision-model), a small decision model, in `judge` mode. Background job logs read freely. The system prompt tells the model who approves in this session, and a note tells it when `/permissions` changes that. This is a gate, not a sandbox.
 - **`/goal`.** The model keeps working until it calls `goal_done`. The harness then runs `--verify`, and a reviewer subagent with an empty context checks the work. The worker never grades itself.
 - **Cost.** Every request is priced from its token usage with the rates in `models.json` and summed. It isn't shown while you work: `--json` reports it, and `--budget` uses it to stop a long goal run.
@@ -245,4 +245,4 @@ A full-screen UI, hooks, plugins, a sandbox, checkpoints (use git), forked or pa
 uv run pytest -q
 ```
 
-164 offline tests against a scripted fake client and a real MCP stdio server. They check the invariants above: append-only requests, an answer for every tool call, resume, compaction, interrupts, goal mode, subagent isolation. `AGENTS.md` has the rules for changing the code.
+174 offline tests against a scripted fake client and a real MCP stdio server. They check the invariants above: append-only requests, an answer for every tool call, resume, compaction, interrupts, goal mode, subagent isolation. `AGENTS.md` has the rules for changing the code.
