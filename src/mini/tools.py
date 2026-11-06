@@ -59,15 +59,18 @@ def printable(text: str, lines: bool = False) -> str:
                    else c.encode("unicode_escape").decode() for c in text)
 
 
-def spawn(args, cwd, shell=False):
+def spawn(args, cwd, shell=False, command=None):
     """Start with no stdin, stdout and stderr into a new log under ~/.mini/jobs/. On POSIX it gets its own session
-    (process group), so a Ctrl-C at the terminal doesn't reach it."""
+    (process group), so a Ctrl-C at the terminal doesn't reach it. A command goes in through the environment, not
+    the arguments, so the model's own `pkill -f` can't match the shell running it (nor can anyone read it in ps)."""
     log = session.HOME / "jobs" / f"{time.strftime('%Y%m%d-%H%M%S')}-{secrets.token_hex(6)}.log"
     log.parent.mkdir(parents=True, exist_ok=True)
     try:
         with log.open("ab") as out:  # appended to, so nothing it writes late lands over the [exit N] that reap() adds
             return subprocess.Popen(args, shell=shell, cwd=cwd, stdin=subprocess.DEVNULL, stdout=out, stderr=subprocess.STDOUT,
-                                    env={**os.environ, "PAGER": "cat", "PYTHONUNBUFFERED": "1"}, start_new_session=True), log
+                                    env={**os.environ, "PAGER": "cat", "PYTHONUNBUFFERED": "1",
+                                         **({"MINI_COMMAND": command} if command is not None else {})},
+                                    start_new_session=True), log
     except BaseException:  # e.g. the working directory is gone: no empty log left behind
         log.unlink(missing_ok=True)
         raise
@@ -94,6 +97,8 @@ def reap(proc, log=None):
 
 
 RUNNING = []  # commands left running at their timeout; background jobs aren't here, since they're meant to outlive mini
+JOBS = []  # background jobs started in this session; with RUNNING, every bash result says which are still going
+EVAL = 'eval "unset MINI_COMMAND\n$MINI_COMMAND"'  # expanded before eval runs, so the command and its children don't inherit it
 
 
 @atexit.register
@@ -124,7 +129,7 @@ def run_shell(command: str, cwd, timeout: int, keep=False) -> tuple[int | None, 
     leaves running with & doesn't hold it. Ctrl-C kills the whole process group (tree, on Windows), and so does the
     timeout, unless keep: then the command runs on until it ends or mini exits, and the code is None. Never keep on
     Windows: without process groups it shares mini's console, so the user's next Ctrl-C would kill it anyway."""
-    proc, log = spawn([BASH, "-c", command] if BASH else command, cwd, shell=not BASH)
+    proc, log = spawn([BASH, "-c", EVAL], cwd, command=command) if BASH else spawn(command, cwd, shell=True)
     try:
         code = proc.wait(timeout)
         if not keep and not WINDOWS:  # the goal's verify: whatever it left running with & goes too
@@ -133,6 +138,7 @@ def run_shell(command: str, cwd, timeout: int, keep=False) -> tuple[int | None, 
     except BaseException as e:
         if keep and isinstance(e, subprocess.TimeoutExpired):  # left running, like a background job
             RUNNING.append(proc)
+            proc.log = log
             reap(proc, log)
             return None, (f"[still running after {timeout}s as pid {proc.pid}, until it ends or mini exits; its output goes "
                           f"on in {log}, which ends with [exit N] when it's done. Stop it with kill -- -{proc.pid}]\n"
@@ -155,11 +161,20 @@ def start_job(command: str, cwd) -> str:
     """Detached in its own session, so neither the call's timeout nor Ctrl-C kills it; the log says when it ends."""
     if WINDOWS:
         raise ToolError("background isn't supported on Windows: run it without background, or ask the user to start it.")
-    # A subshell, so `exit 3` still logs [exit 3]; `set --` inside, so the command doesn't see itself as $1.
-    proc, log = spawn([BASH or "/bin/sh", "-c", '(eval "set --\n$1"); echo "[exit $?]"', "job", command], cwd)
+    # A subshell, so `exit 3` still logs [exit 3].
+    proc, log = spawn([BASH or "/bin/sh", "-c", f'({EVAL}); echo "[exit $?]"'], cwd, command=command)
+    proc.log = log
+    JOBS.append(proc)
     reap(proc)
     return (f"Started in the background: pid {proc.pid}, output in {log} (it ends with [exit N] when the job is done). "
             f"Check it with tail {log} or kill -0 {proc.pid}; stop it with kill -- -{proc.pid}.")
+
+
+def still_running(earlier) -> str:
+    """A line on what earlier calls left running, so the model needn't remember or poll for it."""
+    live = [p for p in earlier if p.poll() is None]
+    return ("\n[still running from earlier calls: " + "; ".join(f"pid {p.pid}, log {p.log}" for p in live)
+            + ". Wait for one with: while kill -0 PID 2>/dev/null; do sleep 5; done]") if live else ""
 
 
 def image_info(data: bytes) -> tuple[str, int, int] | None:
@@ -467,13 +482,15 @@ class LocalTools:
         told = any(command.strip(" \t\n") == f"kill -- -{p.pid}" and p.returncode is None for p in RUNNING)  # its own stop
         if not told and not self.approver.ok("bash", command, self._names_private(command), secret):
             raise ToolError("User denied this command." + self.approver.reason)
+        earlier = RUNNING + JOBS
         if background:
-            return start_job(command, self.cwd)
+            return start_job(command, self.cwd) + still_running(earlier)
         try:
             code, out = run_shell(command, self.cwd, max(timeout, 1), keep=not WINDOWS)
         except subprocess.TimeoutExpired:  # Windows only (see run_shell)
             raise ToolError(f"Timed out after {timeout}s, so it was stopped.")
-        return f"{out.strip()}\n[exit {code}]" if code else (out.strip() or "[no output]")
+        code = 128 - code if code and code < 0 else code  # killed by signal N: 128+N, as bash and the job logs say
+        return (f"{out.strip()}\n[exit {code}]" if code else (out.strip() or "[no output]")) + still_running(earlier)
 
 
 def schema(props: dict, required: list) -> dict:

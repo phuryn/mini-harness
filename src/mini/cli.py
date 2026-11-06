@@ -184,7 +184,7 @@ def main():
             if args.json:
                 print(json.dumps({**result, "session": agent.session.id, "cost": round(agent.cost, 4),
                                   "answer": agent.final_text()}))
-            stopped = result.get("stop") in ("error", "interrupted", "pause_turn", "max_tokens")
+            stopped = result.get("stop") in ("error", "interrupted", "pause_turn", "max_tokens", "refusal")
             if stopped or result.get("status", "done") != "done":  # a script must see the run (or the goal) didn't finish
                 sys.exit(1)
             return

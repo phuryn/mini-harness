@@ -2201,3 +2201,64 @@ def test_at_exit_the_whole_group_dies_even_if_its_shell_goes_first_or_the_wait_i
         with contextlib.suppress(OSError):
             os.killpg(left, signal.SIGKILL)
 
+
+
+# --- 1.0.4: from the survey of failed 1.0.3 runs --------------------------------------------------------------------
+
+def test_a_refused_headless_run_exits_non_zero(ws, monkeypatch):
+    import mini.cli as cli
+
+    class Stub:
+        effort, efforts, model, cost, judge = "high", ("high",), "m", 0.0, None
+        session = type("S", (), {"id": "s"})()
+        def __init__(self, *a, **kw): pass
+        def final_text(self): return ""
+        def maybe_compact(self): pass
+        def turn(self, prompt): return "refusal"
+    monkeypatch.setattr(cli, "Agent", Stub)
+    monkeypatch.chdir(ws)
+    monkeypatch.setattr(sys, "argv", ["mini", "-p", "do it", "--json"])
+    with pytest.raises(SystemExit) as stopped:  # a script must not read "refused" as done
+        cli.main()
+    assert stopped.value.code == 1
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX signals")
+def test_a_command_killed_by_a_signal_reports_128_plus_n(ws):
+    assert LocalTools(str(ws), Approver(auto=True)).bash("echo hi; kill -TERM $$") == "hi\n[exit 143]"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX process list")
+def test_the_command_text_is_not_in_the_process_list_or_inherited(ws):
+    import time
+    t = LocalTools(str(ws), Approver(auto=True))
+    probe = "pgrep -f mini_marker_7731 || echo none; env | grep -c '^MINI_COMMAND=' || true"
+    assert t.bash(probe) == "none\n0"  # the model's own pkill -f can't hit the shell running its command
+    log = Path(re.search(r"output in (\S+) ", t.bash(probe, background=True))[1])
+    end = time.monotonic() + 10
+    while "[exit" not in log.read_text() and time.monotonic() < end:
+        time.sleep(0.05)
+    assert log.read_text() == "none\n0\n[exit 0]\n"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX: nothing is left running on Windows")
+def test_every_bash_result_lists_what_earlier_calls_left_running(ws):
+    import signal
+    t = LocalTools(str(ws), Approver(auto=True))
+    kept = t.bash("sleep 3", timeout=1)
+    assert kept.startswith("[still running after 1s") and "from earlier calls" not in kept  # not listed twice
+    job = t.bash("sleep 3", background=True)
+    pids = [re.search(r"pid (\d+)", x)[1] for x in (kept, job)]
+    try:
+        note = re.search(r"\[still running from earlier calls: (.*)\]$", t.bash("echo hi"))[1]
+        assert [re.findall(r"pid (\d+)", note)] == [pids] and "while kill -0 PID" in note and note.count(".log") == 2
+        assert re.fullmatch(r"hi\n\[still running from earlier calls: .*\]", t.bash("echo hi"))
+    finally:
+        for pid in pids:
+            with contextlib.suppress(ProcessLookupError):
+                os.killpg(int(pid), signal.SIGKILL)
+    import time
+    end = time.monotonic() + 5
+    while "still running" in t.bash("echo hi") and time.monotonic() < end:  # reaped: the note goes away
+        time.sleep(0.1)
+    assert t.bash("echo hi") == "hi"
