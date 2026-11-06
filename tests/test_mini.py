@@ -2273,7 +2273,7 @@ def test_every_bash_result_lists_what_earlier_calls_left_running_and_says_when_i
         assert [int(x) for x in re.findall(r"pid (\d+)", note)] == pids and note.count(".log") == 2
         assert "Stop one with kill -- -PID" in note and "while kill -0 PID" in note
         os.kill(pids[0], signal.SIGTERM)  # a plain kill of its shell: what the shell started goes too
-        assert wait_until(lambda: mt.RUNNING[0].poll() is not None and not mt.group_alive(mt.RUNNING[0]))
+        assert wait_until(lambda: mt.RUNNING[0].poll() is not None and not mt.group_running(mt.RUNNING[0].pid))
         out = t.bash("echo hi")
         assert re.fullmatch(rf"hi\n\[ended since the last call: pid {pids[0]}, log \S+\.log\]"
                             rf"\n\[still running from earlier calls: pid {pids[1]}, .*\]", out), out
@@ -2296,7 +2296,7 @@ def test_kill_9_of_a_jobs_shell_takes_what_ignores_sigterm_with_it(ws):
     pid = int(re.search(r"as pid (\d+),", out)[1])
     try:
         os.kill(pid, signal.SIGKILL)  # the shell only: the python it started ignores SIGTERM, so it needs the same -9
-        assert wait_until(lambda: mt.RUNNING[0].poll() is not None and not mt.group_alive(mt.RUNNING[0]))
+        assert wait_until(lambda: mt.RUNNING[0].poll() is not None and not mt.group_running(mt.RUNNING[0].pid))
     finally:
         with contextlib.suppress(OSError):
             os.killpg(pid, signal.SIGKILL)
@@ -2309,6 +2309,40 @@ def test_an_ended_job_is_announced_once_even_if_no_result_listed_it(ws):
     out = t.bash("sleep 2; echo later")
     assert re.fullmatch(rf"later\n\[ended since the last call: pid {pid}, log \S+\.log\]", out), out
     assert t.bash("echo b") == "b"
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX: nothing is left running on Windows")
+def test_an_ended_job_that_left_something_running_says_so(ws):
+    import signal
+    import mini.tools as mt
+    t = LocalTools(str(ws), Approver(auto=True))
+    pid = int(re.search(r"pid (\d+)", t.bash("nohup sleep 30 >/dev/null 2>&1 &", background=True))[1])
+    try:
+        assert wait_until(lambda: mt.JOBS[0].poll() is not None)  # its shell is done; the sleep it started is not
+        out = t.bash("echo hi")
+        assert re.fullmatch(rf"hi\n\[ended since the last call: pid {pid}, log \S+\.log; what it started is still "
+                            rf"running, in process group {pid}: stop it with kill -- -{pid}\]", out), out
+        assert mt.group_running(pid) and t.bash("echo b") == "b"  # said once
+        os.killpg(pid, signal.SIGKILL)
+        assert wait_until(lambda: not mt.group_running(pid))
+    finally:
+        with contextlib.suppress(OSError):
+            os.killpg(pid, signal.SIGKILL)
+
+
+def test_a_damaged_png_is_refused_before_it_reaches_the_model(ws):
+    from mini.tools import png_damage
+    good = png(5, 7)
+    i = good.index(b"IDAT")
+    bad = good[:i + 4] + bytes([good[i + 4] ^ 1]) + good[i + 5:]  # one bit of the image data flipped
+    assert png_damage(good) is None
+    assert png_damage(bad) == f"chunk IDAT at byte {i - 4} fails its CRC check"
+    assert png_damage(good[:good.index(b"IEND") - 4]) == "it ends before its IEND chunk"
+    t = LocalTools(str(ws), Approver(auto=True))
+    (ws / "bad.png").write_bytes(bad)
+    with pytest.raises(ToolError, match="This PNG is damaged .chunk IDAT at byte .* fails its CRC check"):
+        t.read("bad.png")
+    assert t.held == 0  # nothing of it was kept for the transcript
 
 
 @pytest.mark.parametrize("utc, share", [("2026-11-06 01:00", 1.0), ("2026-11-06 00:59", 0.5), ("2026-11-06 03:59", 1.0),

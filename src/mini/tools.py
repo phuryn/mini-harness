@@ -17,6 +17,7 @@ import signal
 import subprocess
 import threading
 import time
+import zlib
 from pathlib import Path
 
 from . import session
@@ -114,16 +115,25 @@ def stop_running():
             proc.stopping = True  # one SIGTERM: the reaper doesn't send a second when the shell dies
             stop(proc, signal.SIGTERM)
         end = time.monotonic() + 1
-        while time.monotonic() < end and any(group_alive(p) for p in alive):
+        while time.monotonic() < end and any(group_running(p.pid) for p in alive):
             time.sleep(0.05)
     finally:  # a second Ctrl-C or a kill during the wait can't skip this
         for proc in alive:
             stop(proc)
 
 
-def group_alive(proc) -> bool:
-    with contextlib.suppress(OSError):  # gone, or only zombies left (macOS says EPERM then)
-        return os.killpg(proc.pid, 0) is None
+def group_running(pgid: int) -> bool:
+    """Whether anything in the process group still runs. Linux reads /proc, where a zombie counts as gone: in a container
+    whose init never reaps, a finished process would answer kill -0 forever."""
+    if not os.path.exists("/proc/self/stat"):
+        with contextlib.suppress(OSError):  # macOS: EPERM when only zombies are left, and launchd reaps those
+            return os.killpg(pgid, 0) is None
+        return False
+    for f in Path("/proc").glob("[0-9]*/stat"):
+        with contextlib.suppress(OSError, ValueError):
+            state, _, group = f.read_text().rsplit(")", 1)[1].split()[:3]  # the name, in parentheses, may hold spaces
+            if group == str(pgid) and state != "Z":
+                return True
     return False
 
 
@@ -181,10 +191,15 @@ def still_running(earlier) -> str:
     ended = [p for p in earlier if p not in live and getattr(p, "listed", True)]
     for p in earlier:
         p.listed = p in live
-    return ("".join(f"\n[ended since the last call: pid {p.pid}, log {p.log}]" for p in ended)
+    # Its shell ended, but what it started with & or nohup may run on in its group. Asked once, as it's announced; a
+    # live entry's pid is skipped, since an id that was free again may now lead one of mini's own new groups.
+    left = lambda p: p.pid not in {q.pid for q in live} and group_running(p.pid)
+    return ("".join(f"\n[ended since the last call: pid {p.pid}, log {p.log}" + (
+                f"; what it started is still running, in process group {p.pid}: stop it with kill -- -{p.pid}"
+                if left(p) else "") + "]" for p in ended)
             + ("\n[still running from earlier calls: " + "; ".join(f"pid {p.pid}, log {p.log}" for p in live)
                + ". Stop one with kill -- -PID; for one that should finish, wait with: "
-                 "while kill -0 PID 2>/dev/null; do sleep 5; done]" if live else ""))
+                 "while kill -0 PID 2>/dev/null; do sleep 5; done, in a call whose timeout is long enough]" if live else ""))
 
 
 def image_info(data: bytes) -> tuple[str, int, int] | None:
@@ -211,6 +226,20 @@ def image_info(data: bytes) -> tuple[str, int, int] | None:
             return "image/jpeg", be(i + 7, i + 9), be(i + 5, i + 7)
         i += 1 if m == 0xFF else 2 + be(i + 2, i + 4)  # 0xFF: a fill byte
     return "image/jpeg", 0, 0
+
+
+def png_damage(data: bytes) -> str | None:
+    """What makes this PNG unreadable: a chunk failing its CRC, or no IEND. Checked before it's sent, since an image
+    the API refuses fails every later request too (the transcript is never edited)."""
+    i = 8
+    while i + 12 <= len(data):
+        n, kind = int.from_bytes(data[i:i + 4], "big"), data[i + 4:i + 8]
+        if zlib.crc32(data[i + 4:i + 8 + n]) != int.from_bytes(data[i + 8 + n:i + 12 + n], "big"):
+            return f"chunk {kind.decode('latin-1')} at byte {i} fails its CRC check"
+        if kind == b"IEND":
+            return None
+        i += 12 + n
+    return "it ends before its IEND chunk"
 
 
 def truncate(text: str) -> str:
@@ -392,6 +421,9 @@ class LocalTools:
                 raise ToolError(f"Can't show this image ({f'{w}x{h} px' if w and h else 'size unreadable'}): images go "
                                 f"to the model only up to {IMAGE_PX} px on a side. Make a smaller copy with bash and read "
                                 f"that (macOS: sips -Z {IMAGE_PX} <in> --out <out>; elsewhere ImageMagick or Pillow).")
+            if kind == "image/png" and (why := png_damage(data)):
+                raise ToolError(f"This PNG is damaged ({why}), so the model's API would refuse it. Fix what wrote it, "
+                                f"or convert the source again another way, and read that.")
             b64 = base64.b64encode(data).decode()
             if self.held + len(b64) > IMAGES_HELD:  # every request sends them all again
                 raise ToolError(f"This conversation already holds {self.held / 1e6:.1f} MB of images, and mini stops at "
@@ -544,8 +576,9 @@ SCHEMAS = {
                        "until it ends or mini exits, and you get its pid, the log file where its output continues, and "
                        "its output so far. ") + "For servers, long builds and other long jobs, set background: the "
                        "command starts detached, writes to a log file, and the call returns at once with the pid and "
-                       "the log's path. Commands other than plain reads (ls, cat or head of project files, read-only "
-                       "git; no pipes or redirects) go through approval.",
+                       "the log's path. Output piped into tail, grep or less appears only when the command ends, so "
+                       "to watch a long one, send its output to a file and read that. Commands other than plain reads "
+                       "(ls, cat or head of project files, read-only git; no pipes or redirects) go through approval.",
         **schema({"command": {"type": "string"},
                   "timeout": {"type": "integer", "description": "Seconds before " + (
                       "it is killed" if WINDOWS else "it goes on in the background") + " (default 120)"},
