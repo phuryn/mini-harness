@@ -1983,7 +1983,8 @@ def test_a_headless_run_may_stop_what_it_left_running_and_nothing_else(ws):
         with pytest.raises(ToolError, match="denied"):
             headless.bash(other)
     os.killpg(pid, 0)  # none of those ran
-    assert headless.bash(f"kill -- -{pid}") == "[no output]"  # the stop it was told, word for word: no approval
+    stopped = headless.bash(f"kill -- -{pid}")  # the stop it was told, word for word: no approval
+    assert re.fullmatch(rf"\[no output\](\n\[ended since the last call: pid {pid}, log \S+\])?", stopped), stopped
     assert gone(pid) and log.read_text().endswith("[exit 143]\n")  # SIGTERM, written as bash writes it: 128 + 15
     with pytest.raises(ToolError, match="denied"):  # once it's gone, the pid isn't its own any more
         headless.bash(f"kill -- -{pid}")
@@ -2268,26 +2269,25 @@ def test_every_bash_result_lists_what_earlier_calls_left_running_and_says_when_i
     try:
         note = re.search(r"\[still running from earlier calls: (.*)\]$", t.bash("echo hi"))[1]
         assert [int(x) for x in re.findall(r"pid (\d+)", note)] == pids and note.count(".log") == 2
-        assert "Stop one with kill -- -PID" in note and "while kill -0 -- -PID" in note
-        os.kill(pids[0], signal.SIGTERM)  # a plain kill stops only the shell; the sleep it started runs on
-        assert wait_until(lambda: mt.RUNNING[0].returncode is not None)
-        assert f"still running from earlier calls: pid {pids[0]}," in t.bash("echo hi")  # so it's still listed
+        assert "Stop one with kill -- -PID" in note and "while kill -0 PID" in note
+        os.kill(pids[0], signal.SIGTERM)  # a plain kill of its shell: what the shell started goes too
+        assert wait_until(lambda: mt.RUNNING[0].poll() is not None and not mt.group_alive(mt.RUNNING[0]))
+        out = t.bash("echo hi")
+        assert re.fullmatch(rf"hi\n\[ended since the last call: pid {pids[0]}, log \S+\.log\]"
+                            rf"\n\[still running from earlier calls: pid {pids[1]}, .*\]", out), out
     finally:
         for pid in pids:
             with contextlib.suppress(OSError):
                 os.killpg(pid, signal.SIGKILL)
-    assert wait_until(lambda: not any(mt.group_alive(p) for p in mt.RUNNING + mt.JOBS))
-    out = t.bash("echo hi")
-    assert re.fullmatch(r"hi(\n\[ended since the last call: pid \d+, log \S+\.log\]){2}", out), out
-    assert all(f"pid {p}," in out for p in pids)
+    assert wait_until(lambda: mt.JOBS[0].poll() is not None)
+    assert re.fullmatch(rf"hi\n\[ended since the last call: pid {pids[1]}, log \S+\.log\]", t.bash("echo hi"))
     assert t.bash("echo hi") == "hi"  # said once
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX: nothing is left running on Windows")
-def test_an_ended_job_is_announced_once(ws):
+def test_an_ended_job_is_announced_once_even_if_no_result_listed_it(ws):
     t = LocalTools(str(ws), Approver(auto=True))
-    pid = re.search(r"pid (\d+)", t.bash("sleep 1", background=True))[1]
-    assert f"still running from earlier calls: pid {pid}," in t.bash("echo a")
+    pid = re.search(r"pid (\d+)", t.bash("sleep 1", background=True))[1]  # its own result said it was running
     out = t.bash("sleep 2; echo later")
     assert re.fullmatch(rf"later\n\[ended since the last call: pid {pid}, log \S+\.log\]", out), out
     assert t.bash("echo b") == "b"

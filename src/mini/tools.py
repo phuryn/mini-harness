@@ -90,6 +90,8 @@ def reap(proc, log=None):
     """Wait for it in a thread, so it doesn't linger as a zombie that kill -0 still finds; then end its log with [exit N]."""
     def wait():
         code = proc.wait()
+        if code < 0:  # its shell was killed (a plain kill PID): what it started goes too, as when bash exec'd the command
+            stop(proc, signal.SIGTERM)
         if log:
             with contextlib.suppress(OSError), log.open("a", encoding="utf-8") as f:
                 f.write(f"[exit {128 - code if code < 0 else code}]\n")  # killed by signal N: 128+N, as bash says
@@ -106,7 +108,7 @@ def stop_running():
     """When mini exits, however it ends (a script's end, sys.exit, Ctrl-C), so does what it left running: SIGTERM
     first, so a test run or a server can clean up, then SIGKILL for whatever in its group is still there a second
     later. The group, not the shell: what it started can outlive it, and while any of it lives, the id is still ours."""
-    alive = [p for p in RUNNING if p.returncode is None or group_alive(p)]  # while its group lives, the id is still ours
+    alive = [p for p in RUNNING if p.returncode is None]  # not reaped yet, so the pid can't belong to something else
     try:
         for proc in alive:
             stop(proc, signal.SIGTERM)
@@ -172,16 +174,16 @@ def start_job(command: str, cwd) -> str:
 
 
 def still_running(earlier) -> str:
-    """What earlier calls left running, and what has ended since a result last listed it, so the model needn't poll.
-    A job counts while any of its group lives: a plain kill of its pid stops only the shell, not what it started."""
-    live = [p for p in earlier if p.poll() is None or group_alive(p)]
-    ended = [p for p in earlier if p not in live and getattr(p, "listed", False)]
+    """What earlier calls left running, and what has ended since the model last heard it was running (the call that
+    started it said so), so it needn't poll. An entry that has ended is never probed again: its pid may be reused."""
+    live = [p for p in earlier if p.poll() is None]
+    ended = [p for p in earlier if p not in live and getattr(p, "listed", True)]
     for p in earlier:
         p.listed = p in live
     return ("".join(f"\n[ended since the last call: pid {p.pid}, log {p.log}]" for p in ended)
             + ("\n[still running from earlier calls: " + "; ".join(f"pid {p.pid}, log {p.log}" for p in live)
                + ". Stop one with kill -- -PID; for one that should finish, wait with: "
-                 "while kill -0 -- -PID 2>/dev/null; do sleep 5; done]" if live else ""))
+                 "while kill -0 PID 2>/dev/null; do sleep 5; done]" if live else ""))
 
 
 def image_info(data: bytes) -> tuple[str, int, int] | None:
