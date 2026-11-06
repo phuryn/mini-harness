@@ -44,6 +44,14 @@ FALLBACK_BETA = "server-side-fallback-2026-07-01"
 def model_config(model: str) -> dict:
     """Settings for a model by name: its own entry over the Claude defaults (another provider's entry stands alone)."""
     return OTHER[model] if model in OTHER else {**MODELS["claude-*"], **MODELS.get(model, {})}
+def rate(cfg) -> float:
+    """Share of the list prices that applies now. Some providers charge less off-peak: "peak_utc" lists the weekday UTC hours
+    at full price, the rest cost "off_peak" of it. Public holidays can't be known here, so they count as weekdays."""
+    t = time.gmtime(time.time())
+    peak = t.tm_wday < 5 and any(a <= t.tm_hour < b for a, b in cfg.get("peak_utc", [[0, 24]]))
+    return 1.0 if peak or "peak_utc" not in cfg else cfg.get("off_peak", 0.5)
+
+
 SUMMARIZE = ("Context is full. Write a summary of this whole conversation that lets you continue the work from the "
              "summary alone: the user's requests and constraints, decisions made, files read and changed, commands "
              "run and their results, the current state, and the next step. Be specific: paths, names, errors. "
@@ -292,7 +300,7 @@ class Agent:
             pin, pout, pread, pwrite = p["input"], p["output"], p["cache_read"], p["cache_write"]
             cost += (n(getattr(i, "input_tokens", 0)) * pin + n(getattr(i, "output_tokens", 0)) * pout
                      + n(getattr(i, "cache_read_input_tokens", 0)) * pread
-                     + n(getattr(i, "cache_creation_input_tokens", 0)) * pwrite) / 1e6
+                     + n(getattr(i, "cache_creation_input_tokens", 0)) * pwrite) / 1e6 * rate(cfg)
         if u.server_tool_use:
             cost += n(u.server_tool_use.web_search_requests) * self.search_price
         return cost

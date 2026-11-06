@@ -22,7 +22,8 @@
       "base_url": "https://api.deepseek.com/anthropic", "key": "DEEPSEEK_API_KEY",
       "window": 1048576, "compact_at": 800000, "search": 0.00075,
       "efforts": ["low", "high", "max"],
-      "prices": {"input": 0.30, "output": 1.20, "cache_read": 0.006, "cache_write": 0.30}
+      "prices": {"input": 0.30, "output": 1.20, "cache_read": 0.006, "cache_write": 0.30},
+      "peak_utc": [[1, 4], [6, 10]], "off_peak": 0.5
     }
   }
 }

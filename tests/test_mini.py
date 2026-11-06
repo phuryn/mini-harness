@@ -3,10 +3,12 @@ import json
 import os
 import re
 import sys
+import time
 from pathlib import Path
 
 import pytest
 
+from mini import loop
 from mini.ext import MCPHub, find_skills
 from mini.loop import Agent
 from mini.session import Session, list_sessions
@@ -883,11 +885,25 @@ def test_deepseek_request_drops_claude_only_fields(ws):
     assert_append_only([client.requests[0], client.requests[2]])
 
 
-def test_deepseek_prices_and_search(ws):
+PEAK, WEEKEND = 1793932200, 1794018600  # Fri 2026-11-06 02:30 UTC (DeepSeek peak), Sat 2026-11-07 02:30 UTC (off-peak)
+
+
+def test_deepseek_prices_and_search(ws, monkeypatch):
+    monkeypatch.setattr(time, "time", lambda: PEAK)
     u = {**usage(inp=1_000_000, out=1_000_000), "server_tool_use": {"web_search_requests": 4, "web_fetch_requests": 0}}
     agent, _, _ = ds(ws, [reply(text("x"), model="deepseek-flash", u=u)])
     agent.turn("hi")
     assert agent.cost == pytest.approx(0.30 + 1.20 + 4 * 0.00075)
+
+
+@pytest.mark.parametrize("now, share", [(PEAK, 1.0), (PEAK + 3 * 3600, 0.5), (WEEKEND, 0.5)])
+def test_deepseek_off_peak_halves_tokens_not_search(ws, monkeypatch, now, share):
+    monkeypatch.setattr(time, "time", lambda: now)
+    u = {**usage(inp=1_000_000, out=1_000_000), "server_tool_use": {"web_search_requests": 4, "web_fetch_requests": 0}}
+    agent, _, _ = ds(ws, [reply(text("x"), model="deepseek-flash", u=u)])
+    agent.turn("hi")
+    assert agent.cost == pytest.approx((0.30 + 1.20) * share + 4 * 0.00075)
+    assert loop.rate({"prices": {}}) == 1.0  # no peak_utc: always the list price
 
 
 def test_deepseek_compaction_is_client_side_and_resumes(ws, monkeypatch):

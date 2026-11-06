@@ -201,6 +201,7 @@ Every model setting lives in one file, [`src/mini/models.json`](src/mini/models.
 | `main`, `subagent`, `subagent_cheap` | Default model; the model for subagents and the goal reviewer; the cheaper one the main model may pick for plain reading or search |
 | `prices` | Dollars per million tokens: `input`, `output`, `cache_read` (repeated context, about a tenth of input) and `cache_write` (first time context is cached). mini multiplies each request's token counts by these and adds them up, for `--json` and the `--budget` limit. It isn't shown while you work |
 | `prices_over_100k` | Optional higher rates for prompts over 100K tokens (Haiku 5.5 has them) |
+| `peak_utc`, `off_peak` | Optional off-peak discount: the weekday UTC hours charged in full, and the share of the price outside them. DeepSeek: 01:00–04:00 and 06:00–10:00 UTC, half price the rest of the time and at weekends. Public holidays are priced as weekdays |
 | `window` | Context window in tokens (shown by `/context`) |
 | `max_output` | Most tokens one response may have, thinking included; mini asks for that much. Without it, 64,000 |
 | `compact_at` | Input tokens at which the conversation is summarized; keep it well below `window`. `MINI_COMPACT_AT` overrides it |
