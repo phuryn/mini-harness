@@ -29,7 +29,7 @@ The official 10-task sample of [Terminal-Bench 2.0](https://www.tbench.ai/) (`te
 
 - `trials.csv`: one row per run of a task, for every harness. `passed` is 1 when the task's hidden tests passed;
   `agent_seconds` is the agent's own time (container setup excluded); `cost_usd` is the run's tokens at DeepSeek's peak list price; Mini Harness reports its own cost from the same prices. `cost_usd` is blank
-  when a run recorded no cost or token counts (Hermes Agent 10, Mini Harness 1 runs). `error` names how a run ended when it did not end on its
+  when a run recorded no cost or token counts (Hermes Agent 10 runs). `error` names how a run ended when it did not end on its
   own (`AgentTimeoutError` = stopped at the task's time limit).
 - `summary.csv`: one row per harness, the numbers in the table above. Cost per run is the mean cost of the runs
   that recorded one, times the number of tasks.

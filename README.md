@@ -51,7 +51,7 @@ As of November 2026. Pi is built to be extended; mini is built to be read.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-2.1-dark.png">
-  <img src="docs/img/terminal-bench-2.1-light.png" alt="Terminal-Bench 2.1, Claude Haiku 5.5 at high effort, mean tasks passed of 89 over three runs, with agent minutes and cost per run: Kilo Code 74.0 (624 min, $2.39), Claude Code 72.7 (633 min, $5.15), Mini Harness 72.0 (571 min, $2.74), Hermes Agent 71.0 (798 min, ~$1.69), Pi 70.3 (636 min, $4.75), mini-swe-agent 69.7 (674 min, $5.75), OpenCode 2 69.0 (610 min, $5.17), Terminus 2 67.7 (745 min, $11.61), OpenCode 60.0 (577 min, $1.88).">
+  <img src="docs/img/terminal-bench-2.1-light.png" alt="Terminal-Bench 2.1, Claude Haiku 5.5 at high effort, mean tasks passed of 89 over three runs, with agent minutes and cost per run: Kilo Code 74.0 (624 min, $2.39), Claude Code 72.7 (633 min, $5.15), Mini Harness 72.0 (571 min, $3.28), Hermes Agent 71.0 (798 min, ~$1.69), Pi 70.3 (636 min, $4.75), mini-swe-agent 69.7 (674 min, $5.75), OpenCode 2 69.0 (610 min, $5.17), Terminus 2 67.7 (745 min, $11.61), OpenCode 60.0 (577 min, $1.88).">
 </picture>
 
 Most gaps are within run-to-run noise: each harness's score moved by 2 to 9 tasks between its own runs. Kilo Code, Claude Code, Hermes Agent and Pi ran together; Mini Harness and then the other four ran right after, with the same tasks, settings and machine size.

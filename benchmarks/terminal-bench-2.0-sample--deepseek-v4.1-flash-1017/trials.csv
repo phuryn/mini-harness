@@ -165,7 +165,7 @@ mini-harness,1.0.0,2,configure-git-webserver,0,110.8,0.0144,0,,,,
 mini-harness,1.0.0,2,fix-code-vulnerability,1,25.7,0.0044,0,,,,
 mini-harness,1.0.0,2,log-summary-date-ranges,1,22.5,0.0058,0,,,,
 mini-harness,1.0.0,2,polyglot-c-py,1,129.8,0.0267,0,,,,
-mini-harness,1.0.0,2,qemu-alpine-ssh,0,900.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.0,2,qemu-alpine-ssh,0,900.1,0.04053,0,,,,AgentTimeoutError
 mini-harness,1.0.0,2,qemu-startup,1,339.1,0.0566,0,,,,
 mini-harness,1.0.0,2,regex-log,1,79.6,0.0176,0,,,,
 mini-harness,1.0.0,2,sqlite-with-gcov,1,192.8,0.025,0,,,,

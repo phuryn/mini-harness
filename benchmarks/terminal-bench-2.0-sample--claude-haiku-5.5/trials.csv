@@ -160,7 +160,7 @@ mini-harness,1.0.0,1,qemu-startup,1,109.3,0.0036,0,,,,
 mini-harness,1.0.0,1,regex-log,1,62.1,0.0096,0,,,,
 mini-harness,1.0.0,1,sqlite-with-gcov,1,179.4,0.0061,0,,,,
 mini-harness,1.0.0,2,build-cython-ext,1,264.4,0.0253,0,,,,
-mini-harness,1.0.0,2,chess-best-move,0,900.0,,0,,,,AgentTimeoutError
+mini-harness,1.0.0,2,chess-best-move,0,900.0,0.048996,0,,,,AgentTimeoutError
 mini-harness,1.0.0,2,configure-git-webserver,0,192.4,0.0055,0,,,,
 mini-harness,1.0.0,2,fix-code-vulnerability,1,36.0,0.0045,0,,,,
 mini-harness,1.0.0,2,log-summary-date-ranges,1,31.2,0.0037,0,,,,

@@ -806,13 +806,13 @@ mini-harness,1.0.3,1,break-filter-js-from-html,1,41.1,0.0054,0,,,,
 mini-harness,1.0.3,1,build-cython-ext,1,365.8,0.0258,0,,,,
 mini-harness,1.0.3,1,build-pmars,0,66.4,0.0073,0,,,,
 mini-harness,1.0.3,1,build-pov-ray,1,140.4,0.0088,0,,,,
-mini-harness,1.0.3,1,caffe-cifar-10,0,3600.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,1,caffe-cifar-10,0,3600.1,0.018148,0,,,,AgentTimeoutError
 mini-harness,1.0.3,1,cancel-async-tasks,1,88.4,0.004,0,,,,
 mini-harness,1.0.3,1,chess-best-move,1,29.3,0.0035,0,,,,
 mini-harness,1.0.3,1,circuit-fibsqrt,1,783.8,0.0277,0,,,,
 mini-harness,1.0.3,1,cobol-modernization,1,82.3,0.0139,0,,,,
 mini-harness,1.0.3,1,code-from-image,1,7.7,0.0013,0,,,,
-mini-harness,1.0.3,1,compile-compcert,0,2400.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,1,compile-compcert,0,2400.1,0.011489,0,,,,AgentTimeoutError
 mini-harness,1.0.3,1,configure-git-webserver,1,67.7,0.0045,0,,,,
 mini-harness,1.0.3,1,constraints-scheduling,1,16.7,0.0033,0,,,,
 mini-harness,1.0.3,1,count-dataset-tokens,1,59.1,0.0028,0,,,,
@@ -823,7 +823,7 @@ mini-harness,1.0.3,1,distribution-search,1,43.0,0.0054,0,,,,
 mini-harness,1.0.3,1,dna-assembly,0,196.1,0.0546,0,,,,
 mini-harness,1.0.3,1,dna-insert,0,43.0,0.0071,0,,,,
 mini-harness,1.0.3,1,extract-elf,0,37.7,0.0052,0,,,,
-mini-harness,1.0.3,1,extract-moves-from-video,0,1800.0,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,1,extract-moves-from-video,0,1800.0,0.009617,0,,,,AgentTimeoutError
 mini-harness,1.0.3,1,feal-differential-cryptanalysis,1,222.8,0.0273,0,,,,
 mini-harness,1.0.3,1,feal-linear-cryptanalysis,1,289.1,0.0345,0,,,,
 mini-harness,1.0.3,1,filter-js-from-html,0,85.3,0.0119,0,,,,
@@ -844,7 +844,7 @@ mini-harness,1.0.3,1,largest-eigenval,1,24.0,0.0033,0,,,,
 mini-harness,1.0.3,1,llm-inference-batching-scheduler,1,450.0,0.0425,0,,,,
 mini-harness,1.0.3,1,log-summary-date-ranges,1,20.0,0.0041,0,,,,
 mini-harness,1.0.3,1,mailman,1,383.2,0.0389,0,,,,
-mini-harness,1.0.3,1,make-doom-for-mips,0,900.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,1,make-doom-for-mips,0,900.1,0.526203,0,,,,AgentTimeoutError
 mini-harness,1.0.3,1,make-mips-interpreter,1,630.4,0.2181,0,,,,
 mini-harness,1.0.3,1,mcmc-sampling-stan,1,1257.0,0.0154,0,,,,
 mini-harness,1.0.3,1,merge-diff-arc-agi-task,1,48.0,0.0054,0,,,,
@@ -855,7 +855,7 @@ mini-harness,1.0.3,1,mteb-retrieve,1,134.8,0.0047,0,,,,
 mini-harness,1.0.3,1,multi-source-data-merger,1,23.8,0.0034,0,,,,
 mini-harness,1.0.3,1,nginx-request-logging,1,35.2,0.0043,0,,,,
 mini-harness,1.0.3,1,openssl-selfsigned-cert,1,19.9,0.0031,0,,,,
-mini-harness,1.0.3,1,overfull-hbox,0,750.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,1,overfull-hbox,0,750.1,0.013639,0,,,,AgentTimeoutError
 mini-harness,1.0.3,1,password-recovery,1,45.9,0.0073,0,,,,
 mini-harness,1.0.3,1,path-tracing,1,224.9,0.0401,0,,,,
 mini-harness,1.0.3,1,path-tracing-reverse,1,987.2,0.4547,0,,,,
@@ -877,7 +877,7 @@ mini-harness,1.0.3,1,reshard-c4-data,1,354.4,0.0201,0,,,,
 mini-harness,1.0.3,1,rstan-to-pystan,1,674.4,0.0111,0,,,,
 mini-harness,1.0.3,1,sam-cell-seg,0,1317.5,0.0611,0,,,,
 mini-harness,1.0.3,1,sanitize-git-repo,1,61.2,0.0188,0,,,,
-mini-harness,1.0.3,1,schemelike-metacircular-eval,0,2400.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,1,schemelike-metacircular-eval,0,2400.1,0.453549,0,,,,AgentTimeoutError
 mini-harness,1.0.3,1,sparql-university,0,37.0,0.0068,0,,,,
 mini-harness,1.0.3,1,sqlite-db-truncate,1,30.2,0.0069,0,,,,
 mini-harness,1.0.3,1,sqlite-with-gcov,1,95.5,0.0039,0,,,,
@@ -912,7 +912,7 @@ mini-harness,1.0.3,2,distribution-search,1,44.1,0.0058,0,,,,
 mini-harness,1.0.3,2,dna-assembly,1,245.9,0.0467,0,,,,
 mini-harness,1.0.3,2,dna-insert,0,59.3,0.009,0,,,,
 mini-harness,1.0.3,2,extract-elf,0,40.9,0.0066,0,,,,
-mini-harness,1.0.3,2,extract-moves-from-video,0,1800.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,2,extract-moves-from-video,0,1800.1,0.018324,0,,,,AgentTimeoutError
 mini-harness,1.0.3,2,feal-differential-cryptanalysis,1,141.8,0.0128,0,,,,
 mini-harness,1.0.3,2,feal-linear-cryptanalysis,1,164.7,0.026,0,,,,
 mini-harness,1.0.3,2,filter-js-from-html,0,69.2,0.0104,0,,,,
@@ -933,9 +933,9 @@ mini-harness,1.0.3,2,largest-eigenval,1,363.4,0.0424,0,,,,
 mini-harness,1.0.3,2,llm-inference-batching-scheduler,1,448.5,0.018,0,,,,
 mini-harness,1.0.3,2,log-summary-date-ranges,1,18.3,0.0031,0,,,,
 mini-harness,1.0.3,2,mailman,1,305.0,0.025,0,,,,
-mini-harness,1.0.3,2,make-doom-for-mips,0,900.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,2,make-doom-for-mips,0,900.1,0.4989,0,,,,AgentTimeoutError
 mini-harness,1.0.3,2,make-mips-interpreter,1,569.4,0.3117,0,,,,
-mini-harness,1.0.3,2,mcmc-sampling-stan,1,1800.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,2,mcmc-sampling-stan,1,1800.1,0.012735,0,,,,AgentTimeoutError
 mini-harness,1.0.3,2,merge-diff-arc-agi-task,1,67.1,0.0057,0,,,,
 mini-harness,1.0.3,2,model-extraction-relu-logits,0,119.0,0.0161,0,,,,
 mini-harness,1.0.3,2,modernize-scientific-stack,1,17.8,0.0029,0,,,,
@@ -970,9 +970,9 @@ mini-harness,1.0.3,2,schemelike-metacircular-eval,1,1594.9,0.5322,0,,,,
 mini-harness,1.0.3,2,sparql-university,1,31.5,0.0056,0,,,,
 mini-harness,1.0.3,2,sqlite-db-truncate,1,25.6,0.0053,0,,,,
 mini-harness,1.0.3,2,sqlite-with-gcov,1,208.0,0.0034,0,,,,
-mini-harness,1.0.3,2,torch-pipeline-parallelism,0,900.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,2,torch-pipeline-parallelism,0,900.1,0.047511,0,,,,AgentTimeoutError
 mini-harness,1.0.3,2,torch-tensor-parallelism,0,181.0,0.0097,0,,,,
-mini-harness,1.0.3,2,train-fasttext,0,3600.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,2,train-fasttext,0,3600.1,0.0208,0,,,,AgentTimeoutError
 mini-harness,1.0.3,2,tune-mjcf,1,225.9,0.01,0,,,,
 mini-harness,1.0.3,2,video-processing,1,189.3,0.0278,0,,,,
 mini-harness,1.0.3,2,vulnerable-secret,1,33.1,0.0062,0,,,,
@@ -990,7 +990,7 @@ mini-harness,1.0.3,3,chess-best-move,0,24.0,0.0031,0,,,,
 mini-harness,1.0.3,3,circuit-fibsqrt,1,726.1,0.0439,0,,,,
 mini-harness,1.0.3,3,cobol-modernization,1,119.3,0.0138,0,,,,
 mini-harness,1.0.3,3,code-from-image,1,11.1,0.0015,0,,,,
-mini-harness,1.0.3,3,compile-compcert,0,2400.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,3,compile-compcert,0,2400.1,0.009534,0,,,,AgentTimeoutError
 mini-harness,1.0.3,3,configure-git-webserver,1,66.8,0.0035,0,,,,
 mini-harness,1.0.3,3,constraints-scheduling,1,17.2,0.0032,0,,,,
 mini-harness,1.0.3,3,count-dataset-tokens,1,42.8,0.003,0,,,,
@@ -1003,7 +1003,7 @@ mini-harness,1.0.3,3,dna-insert,0,59.7,0.0083,0,,,,
 mini-harness,1.0.3,3,extract-elf,0,44.6,0.0063,0,,,,
 mini-harness,1.0.3,3,extract-moves-from-video,1,1706.5,0.0409,0,,,,
 mini-harness,1.0.3,3,feal-differential-cryptanalysis,1,82.7,0.0113,0,,,,
-mini-harness,1.0.3,3,feal-linear-cryptanalysis,0,1800.0,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,3,feal-linear-cryptanalysis,0,1800.0,0.03379,0,,,,AgentTimeoutError
 mini-harness,1.0.3,3,filter-js-from-html,0,102.7,0.0141,0,,,,
 mini-harness,1.0.3,3,financial-document-processor,1,70.4,0.0397,0,,,,
 mini-harness,1.0.3,3,fix-code-vulnerability,1,23.9,0.0041,0,,,,
@@ -1022,7 +1022,7 @@ mini-harness,1.0.3,3,largest-eigenval,1,497.8,0.0663,0,,,,
 mini-harness,1.0.3,3,llm-inference-batching-scheduler,1,124.9,0.0194,0,,,,
 mini-harness,1.0.3,3,log-summary-date-ranges,1,13.9,0.0025,0,,,,
 mini-harness,1.0.3,3,mailman,1,358.8,0.024,0,,,,
-mini-harness,1.0.3,3,make-doom-for-mips,0,900.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,3,make-doom-for-mips,0,900.1,0.43354,0,,,,AgentTimeoutError
 mini-harness,1.0.3,3,make-mips-interpreter,0,988.7,0.3725,0,,,,
 mini-harness,1.0.3,3,mcmc-sampling-stan,1,1068.0,0.0095,0,,,,
 mini-harness,1.0.3,3,merge-diff-arc-agi-task,1,55.2,0.0059,0,,,,
@@ -1044,10 +1044,10 @@ mini-harness,1.0.3,3,protein-assembly,1,157.3,0.0502,0,,,,
 mini-harness,1.0.3,3,prove-plus-comm,1,8.9,0.0016,0,,,,
 mini-harness,1.0.3,3,pypi-server,1,34.0,0.0026,0,,,,
 mini-harness,1.0.3,3,pytorch-model-cli,1,106.9,0.0114,0,,,,
-mini-harness,1.0.3,3,pytorch-model-recovery,1,900.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,3,pytorch-model-recovery,1,900.1,0.009254,0,,,,AgentTimeoutError
 mini-harness,1.0.3,3,qemu-alpine-ssh,1,900.0,0.0137,0,,,,AgentTimeoutError
 mini-harness,1.0.3,3,qemu-startup,1,291.4,0.0078,0,,,,
-mini-harness,1.0.3,3,query-optimize,0,900.1,,0,,,,AgentTimeoutError
+mini-harness,1.0.3,3,query-optimize,0,900.1,0.007595,0,,,,AgentTimeoutError
 mini-harness,1.0.3,3,raman-fitting,0,99.2,0.0102,0,,,,
 mini-harness,1.0.3,3,regex-chess,1,1914.5,0.2075,0,,,,
 mini-harness,1.0.3,3,regex-log,1,43.2,0.0072,0,,,,
