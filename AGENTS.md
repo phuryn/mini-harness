@@ -23,6 +23,8 @@ mini is a minimal agent harness for Claude: a tool loop, five local tools, appen
 | `src/mini/ext.py` | skill discovery and the MCP stdio hub |
 | `src/mini/cli.py` | REPL, slash commands, headless mode |
 | `tests/` | offline tests against a scripted fake client, plus a real MCP stdio server |
+| `smoke-test/` | five live end-to-end tasks with pass/fail checks (`run.py`; one line per run in `results.jsonl`) |
+| `benchmarks/` | published results against other harnesses, one folder per benchmark and model; data only, generated outside this repo and not read by the code, so never edit it by hand |
 
 ## Checks
 
@@ -30,10 +32,18 @@ mini is a minimal agent harness for Claude: a tool loop, five local tools, appen
 uv run pytest -q
 ```
 
-Live smoke test (needs `ANTHROPIC_API_KEY`, or `DEEPSEEK_API_KEY` with `--model deepseek-flash`; spends a few cents):
+Quick live check (needs `ANTHROPIC_API_KEY`, or `DEEPSEEK_API_KEY` with `--model deepseek-flash`; spends a few cents):
 
 ```
 cd /some/scratch/dir && uv run --project ~/mini mini --model claude-haiku-5-5 -p "list the files here"
+```
+
+After a change to the loop, the tools or the prompt, also run the smoke test: five real tasks, about 2 minutes and
+$0.60 on Claude (`--harness mini-deepseek`: about 2 cents). Every task should pass; read the new lines in
+`smoke-test/results.jsonl`.
+
+```
+uv run python smoke-test/run.py --harness mini
 ```
 
 Tests must pass before every commit. A change to the loop needs a test that asserts the append-only invariant (`assert_append_only` in `tests/test_mini.py`).
