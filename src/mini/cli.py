@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import signal
 import sys
 import time
 
@@ -132,6 +133,8 @@ def main():
     p.add_argument("--budget", type=float, help="with --goal: stop after this many dollars")
     p.add_argument("--json", action="store_true", help="headless: print a JSON result line at the end")
     args = p.parse_args()
+    for sig in (signal.SIGTERM, signal.SIGHUP) if os.name != "nt" else ():  # a kill or a closed terminal: exit the
+        signal.signal(sig, lambda n, _: sys.exit(128 + n))  # normal way, so atexit stops what bash left running
     if os.name == "nt":  # the classic Windows console shows color codes as text until asked to interpret them
         import ctypes
         k = ctypes.windll.kernel32

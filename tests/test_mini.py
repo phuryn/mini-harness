@@ -1974,7 +1974,7 @@ if sys.argv[1] == "exit":
     sys.exit(1)  # how a headless run that didn't finish ends
 if sys.argv[1] == "ctrl-c":
     raise KeyboardInterrupt
-if sys.argv[1] == "repl":  # the real REPL, left with Ctrl-C at its prompt
+if sys.argv[1] in ("repl", "sigterm", "sighup"):  # the real REPL, left with Ctrl-C at its prompt, a kill, a closed terminal
     from mini import cli
     sys.argv = ["mini"]
     cli.main()
@@ -1982,7 +1982,7 @@ if sys.argv[1] == "repl":  # the real REPL, left with Ctrl-C at its prompt
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX: Windows leaves nothing running")
-@pytest.mark.parametrize("end", ["return", "exit", "ctrl-c", "repl"])
+@pytest.mark.parametrize("end", ["return", "exit", "ctrl-c", "repl", "sigterm", "sighup"])
 def test_what_a_timeout_left_running_ends_with_mini_but_background_jobs_stay(ws, tmp_path, end):
     import signal
     import subprocess
@@ -1991,11 +1991,12 @@ def test_what_a_timeout_left_running_ends_with_mini_but_background_jobs_stay(ws,
                          stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
     left, job = map(int, p.stdout.readline().split())
     try:
-        if end == "repl":
+        sig = {"repl": signal.SIGINT, "sigterm": signal.SIGTERM, "sighup": signal.SIGHUP}.get(end)
+        if sig:
             assert "permissions" in p.stdout.readline()  # at the prompt
-            p.send_signal(signal.SIGINT)
+            p.send_signal(sig)
         p.communicate(timeout=20)
-        assert gone(left)
+        assert gone(left) and (end not in ("sigterm", "sighup") or p.returncode == 128 + sig)  # as a shell reports it
         os.killpg(job, 0)  # a background job is meant to outlive mini
     finally:
         for pid in (left, job):
