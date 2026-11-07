@@ -56,11 +56,11 @@ As of November 2026. Pi is built to be extended; mini is built to be read.
 
 Most gaps are within run-to-run noise: each harness's score moved by 2 to 9 tasks between its own runs. Kilo Code, Claude Code, Hermes Agent and Pi ran together; Mini Harness and then the other four ran right after, with the same tasks, settings and machine size.
 
-The same benchmark on DeepSeek V4.1 Flash 1017 at high effort, with all nine harnesses running side by side: [mini 1.0.4](https://github.com/phuryn/mini-harness/tree/v1.0.4) passed 75.0 on average, fourth of nine, behind Claude Code (77.7), mini-swe-agent (77.3) and OpenCode (75.7), for $2.25 a run. Terminus 2 has one run so far.
+The same benchmark on DeepSeek V4.1 Flash 1017 at high effort, with all nine harnesses running side by side: [mini 1.0.4](https://github.com/phuryn/mini-harness/tree/v1.0.4) passed 75.0 on average, fourth of nine, behind Claude Code (77.7), mini-swe-agent (77.3) and OpenCode (75.7), for $2.25 a run.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/img/terminal-bench-2.1-deepseek-dark.png">
-  <img src="docs/img/terminal-bench-2.1-deepseek-light.png" alt="Terminal-Bench 2.1, DeepSeek V4.1 Flash 1017 at high effort, mean tasks passed of 89 over three runs (Terminus 2: one), with agent minutes and cost per run: Claude Code 77.7 (773 min, $2.84), mini-swe-agent 77.3 (724 min, $2.44), OpenCode 75.7 (709 min, $1.56), Mini Harness 75.0 (851 min, $2.25), OpenCode 2 73.3 (692 min, $1.87), Kilo Code 73.3 (694 min, $1.89), Pi 71.3 (670 min, $1.74), Hermes Agent 71.3 (1029 min, ~$2.42), Terminus 2 71.0 (829 min, $3.67).">
+  <img src="docs/img/terminal-bench-2.1-deepseek-light.png" alt="Terminal-Bench 2.1, DeepSeek V4.1 Flash 1017 at high effort, mean tasks passed of 89 over three runs, with agent minutes and cost per run: Claude Code 77.7 (773 min, $2.84), mini-swe-agent 77.3 (724 min, $2.44), OpenCode 75.7 (709 min, $1.56), Mini Harness 75.0 (851 min, $2.25), OpenCode 2 73.3 (692 min, $1.87), Kilo Code 73.3 (694 min, $1.89), Pi 71.3 (670 min, $1.74), Hermes Agent 71.3 (1029 min, ~$2.42), Terminus 2 70.0 (874 min, $3.72).">
 </picture>
 
 Here too most gaps are noise: a harness's score moved by 1 to 9 tasks between its own runs. Cost is each harness's tokens at DeepSeek's off-peak price, thinking included.
